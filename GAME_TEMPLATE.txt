@@ -1,0 +1,31 @@
+// Copy to Game_YourName.ino INSIDE the Jakeboy_Arcade folder.
+// The new .ino tab registers automatically, with no launcher edits.
+#include "GameAPI.h"
+#include "Hardware.h"
+#include <Adafruit_ST7789.h>
+
+namespace MyGame {
+Adafruit_ST7789 screen(TFT_CS, TFT_DC, TFT_RST);
+unsigned long lastFrame = 0;
+void enter() {
+  lastFrame = millis();
+  screen.setRotation(0); // launcher already initialized the TFT
+  screen.fillScreen(ST77XX_BLACK);
+  screen.setTextSize(2);
+  screen.setTextColor(ST77XX_WHITE);
+  screen.setCursor(20, 30);
+  screen.print("MY GAME");
+}
+void update(const GameInput &input) {
+  // Loop runs often. Keep this quick and use millis() timers, not delay().
+  if (input.leftPressed) { /* one press on left */ }
+  if (input.rightButton) { /* right button held */ }
+  if (millis() - lastFrame >= 33) {
+    lastFrame = millis();
+    // Update moving parts here. Redraw only changed areas to avoid flicker.
+  }
+}
+} // namespace MyGame
+
+// Pick a unique order. Keep titles <=15 characters for the menu.
+REGISTER_GAME(30, "MY GAME", MyGame::enter, MyGame::update);
