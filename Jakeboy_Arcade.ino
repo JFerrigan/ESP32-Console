@@ -8,15 +8,19 @@
     void MyGame::update(const GameInput&); // advance game each launcher loop
   At file scope register the game exactly once:
     REGISTER_GAME(30, "MY GAME", MyGame::enter, MyGame::update);
-  Use a unique order number (lower = higher in menu). That is all the
-  launcher needs: no edit to its menu, setup(), or loop().
+
+  Every registered game appears automatically. To force particular games to
+  the top in a specific order, add their exact REGISTER_GAME title strings to
+  PINNED_GAME_ORDER below. Games not listed there still appear automatically
+  after the pinned games, sorted by their normal numeric order value.
+  No launcher edit is required just to add a new game.
 
   Details: GameInput contains leftButton/rightButton held and leftPressed/
   rightPressed edges. Keep update() non-blocking. Use millis() for timing.
   The launcher owns GPIO, menu selection, and screen transitions. Your game
   may draw to its own Adafruit_ST7789 display or use its own helper code.
   The launcher calls enter() anew on every launch. Both buttons held together
-  for 700 ms return to the menu. GPIO assignments are in Hardware.h.
+  for 2 seconds return to the menu. GPIO assignments are in Hardware.h.
   Existing large games put gameplay in their .h file and register from a
   matching Game_*.ino tab to avoid Arduino's automatic prototype generation.
   A simple game may live entirely in its Game_*.ino tab. See GAME_TEMPLATE.txt.
@@ -24,24 +28,78 @@
   Music/Settings/Hardware Test are built-in menu entries after the games.
 */
 #include <Arduino.h>
+#include <string.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 #include "Hardware.h"
 #include "GameAPI.h"
+#include "GameRenderMemory.h"
 #include "MusicPlayer.h"
 
+alignas(4) uint8_t GameRenderMemory::bytes[GameRenderMemory::CAPACITY];
+
 // Registration happens during startup. The fixed array avoids allocation.
+//
+// Optional pinned menu order:
+//   - Put exact game TITLE strings here to force them to the top.
+//   - They appear in exactly this order when those games are installed.
+//   - A title listed here but not installed is simply ignored.
+//   - Every registered game NOT listed here still appears automatically after
+//     the pinned games, using its normal REGISTER_GAME order value.
+//
+// Edit only this list when you care about a game's exact menu position.
+const char* const PINNED_GAME_ORDER[] = {
+  "DEEP VECTOR",
+  "ICE COLD BEER"
+};
+
+constexpr uint8_t PINNED_GAME_COUNT =
+  sizeof(PINNED_GAME_ORDER) / sizeof(PINNED_GAME_ORDER[0]);
+
+int pinnedGameRank(const char* title) {
+  if (!title) return -1;
+
+  for (uint8_t i = 0; i < PINNED_GAME_COUNT; ++i) {
+    if (strcmp(title, PINNED_GAME_ORDER[i]) == 0) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+bool gameComesBefore(const GameModule &a, const GameModule &b) {
+  const int rankA = pinnedGameRank(a.title);
+  const int rankB = pinnedGameRank(b.title);
+
+  // If both games are pinned, the hard-coded list decides their order.
+  if (rankA >= 0 && rankB >= 0) {
+    return rankA < rankB;
+  }
+
+  // Pinned games always come before unpinned games.
+  if (rankA >= 0) return true;
+  if (rankB >= 0) return false;
+
+  // Neither game is pinned: preserve the existing numeric ordering behavior.
+  return a.order < b.order;
+}
+
 GameModule registeredGames[MAX_GAMES];
 uint8_t registeredGameCount = 0;
+
 bool registerGame(const GameModule &game) {
   if (registeredGameCount >= MAX_GAMES || !game.title || !game.enter || !game.update)
     return false;
+
   uint8_t slot = registeredGameCount++;
-  while (slot > 0 && registeredGames[slot-1].order > game.order) {
-    registeredGames[slot] = registeredGames[slot-1];
+
+  while (slot > 0 && gameComesBefore(game, registeredGames[slot - 1])) {
+    registeredGames[slot] = registeredGames[slot - 1];
     --slot;
   }
+
   registeredGames[slot] = game;
   return true;
 }
@@ -280,6 +338,14 @@ bool leftSwitchMovedDown() {
     previousLeftSwitch != SWITCH_DOWN;
 }
 
+bool rightSwitchMovedUp() {
+  return rightSwitch == SWITCH_UP && previousRightSwitch != SWITCH_UP;
+}
+
+bool rightSwitchMovedDown() {
+  return rightSwitch == SWITCH_DOWN && previousRightSwitch != SWITCH_DOWN;
+}
+
 
 // ============================================================
 // BUZZER HELPERS
@@ -481,7 +547,7 @@ void drawMainMenu() {
 
   display.setCursor(18, 285);
   display.println(
-    "LEFT SWITCH: MOVE"
+    "EITHER SWITCH: UP/DOWN"
   );
 
   display.setCursor(18, 300);
@@ -862,8 +928,9 @@ void updateTestScreen() {
 
 
 
-// Launcher: left switch navigates; right button selects; left button exits.
-// In games, hold both buttons for 700 ms to return; individual button taps
+// On the main menu, either switch navigates and the right button selects.
+// In Settings, the left button returns to the menu and the right button edits.
+// In games, hold both buttons for 2 seconds to return; individual button taps
 // remain available to the game. The same gesture works in the music screen.
 uint32_t exitChordStarted = 0;
 int settingsRow = 0;
@@ -895,7 +962,7 @@ void drawSettings() {
   display.setCursor(12, 215); display.print("LEFT SWITCH: choose setting");
   display.setCursor(12, 232); display.print("RIGHT SWITCH: change value");
   display.setCursor(12, 249); display.print("RIGHT BUTTON: toggle / volume +");
-  display.setCursor(12, 266); display.print("LEFT BUTTON: menu");
+  display.setCursor(12, 266); display.print("LEFT BUTTON: back to menu");
 }
 void enterMenu() {
   const bool returningFromTest = currentScreen == SCREEN_TEST;
@@ -929,8 +996,10 @@ void launch(int item) {
 }
 void updateMainMenu() {
   int old = selectedMenuItem;
-  if (leftSwitchMovedUp()) selectedMenuItem = (selectedMenuItem + menuCount() - 1) % menuCount();
-  if (leftSwitchMovedDown()) selectedMenuItem = (selectedMenuItem + 1) % menuCount();
+  const bool moveUp = leftSwitchMovedUp() || rightSwitchMovedUp();
+  const bool moveDown = leftSwitchMovedDown() || rightSwitchMovedDown();
+  if (moveUp && !moveDown) selectedMenuItem = (selectedMenuItem + menuCount() - 1) % menuCount();
+  if (moveDown && !moveUp) selectedMenuItem = (selectedMenuItem + 1) % menuCount();
   if (old != selectedMenuItem) {
     int oldTop = menuTop;
     if (selectedMenuItem < menuTop) menuTop = selectedMenuItem;
@@ -990,7 +1059,7 @@ void loop() {
     // Both buttons held prevents a quick accidental exit while playing.
     if (leftButton && rightButton) {
       if (!exitChordStarted) exitChordStarted = millis();
-      if (millis() - exitChordStarted >= 700) { enterMenu(); return; }
+      if (millis() - exitChordStarted >= 2000) { enterMenu(); return; }
     } else exitChordStarted = 0;
     if (currentScreen == SCREEN_GAME && activeGame) {
       const GameInput input = {leftButton, rightButton,

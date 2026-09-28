@@ -4,6 +4,7 @@
 #include <math.h>
 #include <string.h>
 #include "GameAPI.h"
+#include "GameRenderMemory.h"
 #include "Hardware.h"
 #include "MusicPlayer.h"
 
@@ -33,17 +34,19 @@ constexpr uint8_t MAX_CATCHUP = 4;
 
 // Indexed world/cockpit frame + world-only depth buffer.
 // This is intentionally much smaller than a 240x320 RGB565 framebuffer.
-static uint8_t frame[RW * RH];
-static uint8_t depthBuf[RW * WORLD_H];
+static_assert(RW * RH == GameRenderMemory::FRAME_BYTES, "shared frame size mismatch");
+static_assert(RW * WORLD_H == GameRenderMemory::DEPTH_BYTES, "shared depth size mismatch");
+static uint8_t *const frame = GameRenderMemory::bytes;
+static uint8_t *const depthBuf = GameRenderMemory::bytes + GameRenderMemory::FRAME_BYTES;
 static uint16_t physicalRow[RW * 2];
 
 // Palette indexes
 //  0 black           1 white           2 sky light       3 sky dark
 //  4 sand            5 dirt            6 grass           7 road
 //  8 concrete        9 dark metal     10 armor          11 red
-// 12 amber          13 smoke          14 green          15 orange
-// 16 rubble         17 water          18 trench         19 enemy
-// 20 enemy dark     21 flash          22 cockpit light  23 cockpit dark
+// 12 amber          13 smoke          14 bright green   15 orange
+// 16 rubble         17 water          18 trench         19 enemy green
+// 20 enemy dark grn 21 flash          22 cockpit light  23 cockpit dark
 // 24 core           25 blue steel     26 gray           27 brown
 // 28 dark red       29 dark amber     30 shadow         31 cyan
 static const uint16_t PALETTE[32] = {
@@ -51,8 +54,8 @@ static const uint16_t PALETTE[32] = {
   0xD5E8, 0x8B85, 0x5BE5, 0x630C,
   0x9CF3, 0x3186, 0x7BEF, 0xF800,
   0xFD20, 0x6B4D, 0x07E0, 0xFC00,
-  0x738E, 0x041F, 0x31A4, 0xC986,
-  0x7043, 0xFFE0, 0xB5B6, 0x2945,
+  0x738E, 0x041F, 0x31A4, 0x4E69,
+  0x2D25, 0xFFE0, 0xB5B6, 0x2945,
   0xF81F, 0x4A69, 0x7BEF, 0x79E0,
   0x6000, 0x8200, 0x18E3, 0x07FF
 };
@@ -1387,7 +1390,7 @@ static void clearAndDrawGround() {
     uint8_t c = y < 25 ? 3 : 2;
     for (int x = 0; x < RW; ++x) frame[y*RW+x] = c;
   }
-  memset(depthBuf, 0, sizeof(depthBuf));
+  memset(depthBuf, 0, RW * WORLD_H);
 
   float sh = sinf(g.player.pose.heading);
   float ch = cosf(g.player.pose.heading);
@@ -1436,34 +1439,34 @@ static void drawDepthRectSprite(float wx, float wy, float wz,
 
 // Finished low-resolution authored-style sprites encoded directly as palette indexes.
 static const uint8_t TANK_LIGHT_SPRITE[11*8] = {
-  0,0,0,19,19,19,0,0,0,0,0,
-  0,0,19,20,20,20,19,0,0,0,0,
-  0,19,19,19,19,19,19,19,0,0,0,
-  20,19,19,21,19,19,19,19,20,0,0,
-  20,20,19,19,19,19,19,20,20,0,0,
-  20,20,20,19,19,19,20,20,20,0,0,
-  0,20,20,20,20,20,20,20,0,0,0,
-  0,0,20,0,20,0,20,0,0,0,0
+  0,0,0,0,21,21,0,0,0,0,0,
+  0,0,0,0,19,19,19,0,0,0,0,
+  0,9,19,19,20,14,20,19,19,9,0,
+  9,9,19,14,14,14,14,14,19,9,9,
+  9,9,19,14,20,20,20,14,19,9,9,
+  9,9,19,14,14,19,14,14,19,9,9,
+  0,9,19,19,19,19,19,19,19,9,0,
+  0,0,9,0,9,0,9,0,9,0,0
 };
 static const uint8_t TANK_MED_SPRITE[11*8] = {
-  0,0,0,19,19,19,0,0,0,0,0,
-  0,0,19,20,19,20,19,0,0,0,0,
-  0,19,19,19,19,19,19,19,19,0,0,
-  20,19,19,21,21,19,19,19,19,20,0,
-  20,20,19,19,19,19,19,19,20,20,0,
-  20,20,20,19,19,19,19,20,20,20,0,
-  20,20,20,20,20,20,20,20,20,20,0,
-  0,20,20,0,20,20,0,20,20,0,0
+  0,0,0,0,21,21,21,0,0,0,0,
+  0,0,0,19,19,20,19,19,0,0,0,
+  0,9,19,20,14,14,14,20,19,9,0,
+  9,9,19,14,14,20,14,14,19,9,9,
+  9,9,19,14,20,20,20,14,19,9,9,
+  9,9,19,14,14,14,14,14,19,9,9,
+  9,9,19,19,19,19,19,19,19,9,9,
+  0,9,9,0,9,9,9,0,9,9,0
 };
 static const uint8_t TANK_HEAVY_SPRITE[11*8] = {
-  0,0,0,20,19,20,0,0,0,0,0,
-  0,0,20,19,19,19,20,0,0,0,0,
-  0,20,19,19,19,19,19,20,0,0,0,
-  20,19,19,21,21,21,19,19,20,0,0,
-  20,20,19,19,19,19,19,20,20,0,0,
-  20,20,20,19,19,19,20,20,20,0,0,
-  20,20,20,20,20,20,20,20,20,20,0,
-  20,0,20,0,20,0,20,0,20,0,0
+  0,0,0,21,21,21,21,21,0,0,0,
+  0,0,19,19,20,20,20,19,19,0,0,
+  0,9,19,20,14,14,14,20,19,9,0,
+  9,9,19,14,14,20,14,14,19,9,9,
+  9,9,19,14,20,20,20,14,19,9,9,
+  9,9,20,14,14,14,14,14,20,9,9,
+  9,9,19,19,19,19,19,19,19,9,9,
+  9,0,9,0,9,0,9,0,9,0,9
 };
 static const uint8_t SOLDIER_SPRITE[5*9] = {
   0,0,19,0,0,

@@ -16,7 +16,7 @@ To add a game, copy `GAME_TEMPLATE.txt` to `Game_YourName.ino` in this folder, g
 
 ## Controls
 
-Left switch up/down: navigate menu. Right button: select. Hold both buttons together for 700 ms in a game to return. The switches remain available to each game on GPIO 33/32 and 26/25. Left button GPIO 27; right button GPIO 14. Music uses buzzers GPIO 22 and 21. Hardware Test exits with left button held and right switch down. Settings control music on/off and volume.
+Either switch up/down: navigate the main menu. Right button: select. The left button does nothing on the main menu. In Settings, the left button goes back and the right button changes the selected setting. Hold both buttons together for 2 seconds in a game to return. The switches remain available to each game on GPIO 33/32 and 26/25. Left button GPIO 27; right button GPIO 14. Music uses buzzers GPIO 22 and 21. Hardware Test exits with left button held and right switch down. Settings control music on/off and volume.
 
 The games retain their existing controls. Deep Vector uses either button to shoot. Ice Cold Beer uses its two three-position switches.
 

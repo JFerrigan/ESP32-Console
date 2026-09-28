@@ -1,5 +1,6 @@
 #pragma once
 #include "Hardware.h"
+#include "GameRenderMemory.h"
 #include <Arduino.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
@@ -244,8 +245,10 @@ DebouncedSwitch rightSwitch;
 GameState gameState = GAME_BOOT;
 bool fireButtonHeld = false;
 
-RenderCommand previousCommands[MAX_RENDER_COMMANDS];
-RenderCommand currentCommands[MAX_RENDER_COMMANDS];
+static_assert(sizeof(RenderCommand) * MAX_RENDER_COMMANDS * 2 <= GameRenderMemory::CAPACITY,
+              "render commands exceed shared memory");
+RenderCommand *const previousCommands = reinterpret_cast<RenderCommand *>(GameRenderMemory::bytes);
+RenderCommand *const currentCommands = previousCommands + MAX_RENDER_COMMANDS;
 int previousCommandCount = 0;
 int currentCommandCount = 0;
 
