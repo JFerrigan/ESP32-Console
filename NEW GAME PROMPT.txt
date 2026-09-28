@@ -1,0 +1,1158 @@
+# Jakeboy Arcade — Game Implementation Instructions
+
+Implement the attached game specification as a complete game for my existing ESP32 handheld arcade.
+
+Your job is to produce **finished drop-in source code**, not a prototype, example, pseudocode, partial implementation, or tutorial.
+
+The result must integrate with the existing Jakeboy Arcade launcher without requiring modifications to the launcher.
+
+---
+
+# 1. REQUIRED OUTPUT
+
+Create:
+
+`Game_<GameName>.ino`
+
+The file must be ready for me to copy directly into the existing:
+
+`Jakeboy_Arcade/`
+
+Arduino sketch folder.
+
+For a reasonably sized game, put the complete implementation in this single `.ino` file.
+
+If the game becomes sufficiently large that Arduino automatic prototype generation is likely to cause problems, you may instead output:
+
+- `Game_<GameName>.ino` — very small registration wrapper
+- `<GameName>.h` — full implementation
+
+In that case, BOTH files must be complete and immediately usable.
+
+Do not require me to manually merge code.
+
+Do not modify:
+
+- `Jakeboy_Arcade.ino`
+- `GameAPI.h`
+- `Hardware.h`
+- existing games
+- launcher/menu code
+
+unless I explicitly ask you to.
+
+At the end of your response, list exactly which files I need to copy into the Jakeboy Arcade folder.
+
+---
+
+# 2. EXISTING PLATFORM
+
+Hardware:
+
+- ESP32 DevKit / ESP32-WROOM
+- Arduino IDE
+- Arduino C++
+- ST7789 / ST7789V TFT
+- 240 × 320 resolution
+- portrait orientation
+- `display.setRotation(0)`
+
+Existing libraries include:
+
+```cpp
+#include <Arduino.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7789.h>
+```
+
+---
+
+# 3. EXISTING HARDWARE PIN MAP
+
+Use `Hardware.h`.
+
+Do not redefine or change these pins.
+
+```cpp
+// TFT
+#define TFT_MOSI 23
+#define TFT_SCLK 18
+#define TFT_DC   17
+#define TFT_CS   5
+#define TFT_RST  16
+
+// LEFT 3-POSITION SWITCH
+#define LEFT_UP_PIN    33
+#define LEFT_DOWN_PIN  32
+
+// RIGHT 3-POSITION SWITCH
+#define RIGHT_UP_PIN   26
+#define RIGHT_DOWN_PIN 25
+
+// RIGHT BUTTON / BUTTON 1
+#define BUTTON_1_PIN 14
+
+// LEFT BUTTON / BUTTON 2
+#define BUTTON_2_PIN 27
+
+// RIGHT BUZZER / BUZZER 1
+#define BUZZER_1_PIN 22
+
+// LEFT BUZZER / BUZZER 2
+#define BUZZER_2_PIN 21
+```
+
+All switches/buttons use `INPUT_PULLUP`.
+
+Therefore:
+
+```cpp
+LOW  = active
+HIGH = inactive
+```
+
+Physical button mapping is important:
+
+```text
+LEFT physical button
+    = Button 2
+    = GPIO 27
+
+RIGHT physical button
+    = Button 1
+    = GPIO 14
+```
+
+Do not accidentally reverse them.
+
+---
+
+# 4. DISPLAY OWNERSHIP — CRITICAL
+
+The launcher already owns and initializes the TFT.
+
+`GameAPI.h` exposes:
+
+```cpp
+extern Adafruit_ST7789 display;
+```
+
+You MUST use this existing global `display`.
+
+For example:
+
+```cpp
+display.fillScreen(ST77XX_BLACK);
+display.drawRect(...);
+display.fillRect(...);
+display.setCursor(...);
+display.print(...);
+```
+
+## DO NOT DO THIS
+
+Do NOT create another display object:
+
+```cpp
+Adafruit_ST7789 screen(TFT_CS, TFT_DC, TFT_RST);
+```
+
+Do NOT create another `Adafruit_ST7789 display`.
+
+Do NOT call:
+
+```cpp
+display.init(...)
+SPI.begin(...)
+```
+
+inside the game.
+
+The launcher has already initialized SPI and the TFT.
+
+Creating a second TFT object can result in a game that launches but does not correctly render.
+
+The game may call:
+
+```cpp
+display.setRotation(0);
+```
+
+when entering if needed, but should otherwise assume the display is ready.
+
+---
+
+# 5. REQUIRED INCLUDES
+
+The game should normally begin with:
+
+```cpp
+#include "GameAPI.h"
+#include "Hardware.h"
+#include <Adafruit_ST7789.h>
+```
+
+Additional standard Arduino/C++ includes are allowed when genuinely required.
+
+Avoid adding external library dependencies unless the game specification explicitly requires them.
+
+---
+
+# 6. UNIQUE NAMESPACE
+
+Put the entire game in a unique namespace.
+
+Example:
+
+```cpp
+namespace LunarLander {
+
+    // game state
+    // constants
+    // functions
+
+}
+```
+
+Do not place generic names such as:
+
+```cpp
+update()
+draw()
+reset()
+player
+state
+```
+
+in the global namespace.
+
+This sketch contains many games compiled into one firmware image, so name collisions must be prevented.
+
+---
+
+# 7. GAME REGISTRATION
+
+The file must contain exactly ONE registration statement at file scope:
+
+```cpp
+REGISTER_GAME(
+    40,
+    "LUNAR LANDER",
+    LunarLander::enter,
+    LunarLander::update
+);
+```
+
+Use the menu order number I specify.
+
+If none is specified, clearly identify the order number you chose so I can make sure it does not collide with another game.
+
+Menu titles should preferably be 15 characters or fewer.
+
+Do not manually add the game to the launcher menu.
+
+The registration system handles that automatically.
+
+---
+
+# 8. REQUIRED GAME ENTRY POINTS
+
+Every game must provide:
+
+```cpp
+void enter();
+void update(const GameInput &input);
+```
+
+## `enter()`
+
+`enter()` is called every time the user launches the game.
+
+It must completely reset the game's runtime state.
+
+It should:
+
+1. reset gameplay state
+2. reset timers
+3. reset score/lives/etc.
+4. reset cached rendering state
+5. set rotation if necessary
+6. clear the screen ONCE
+7. draw the game's initial/static screen
+8. make the game immediately ready to run
+
+Example:
+
+```cpp
+void enter() {
+    state = PLAYING;
+    score = 0;
+    lastFrameMs = millis();
+
+    display.setRotation(0);
+    display.fillScreen(ST77XX_BLACK);
+
+    drawStaticScene();
+    drawPlayer();
+    drawHUD();
+}
+```
+
+Do not assume old variables contain their initial values just because they were initialized globally. The game may be launched multiple times during the same ESP32 session.
+
+---
+
+# 9. BUTTON INPUT
+
+The launcher gives the game:
+
+```cpp
+struct GameInput {
+    bool leftButton;
+    bool rightButton;
+    bool leftPressed;
+    bool rightPressed;
+};
+```
+
+Meaning:
+
+```text
+leftButton
+    physical LEFT button currently held
+
+rightButton
+    physical RIGHT button currently held
+
+leftPressed
+    LEFT button changed from released -> pressed this update
+
+rightPressed
+    RIGHT button changed from released -> pressed this update
+```
+
+Use:
+
+```cpp
+input.leftPressed
+input.rightPressed
+```
+
+for one-shot actions.
+
+Examples:
+
+- fire once
+- confirm
+- jump
+- restart
+- activate item
+
+Use:
+
+```cpp
+input.leftButton
+input.rightButton
+```
+
+for held actions.
+
+Examples:
+
+- sustained firing
+- charging
+- continuous thrust
+
+Do not perform your own `digitalRead()` for the two push buttons unless there is a specific technical reason.
+
+---
+
+# 10. THREE-POSITION SWITCH INPUT
+
+The two toggle switch states are NOT currently contained in `GameInput`.
+
+Therefore the game may directly read their pins from `Hardware.h`.
+
+Use a local namespaced helper such as:
+
+```cpp
+SwitchState readGameSwitch(int upPin, int downPin) {
+    const bool up = digitalRead(upPin) == LOW;
+    const bool down = digitalRead(downPin) == LOW;
+
+    if (up && !down) return SWITCH_UP;
+    if (!up && down) return SWITCH_DOWN;
+    if (!up && !down) return SWITCH_CENTER;
+
+    return SWITCH_ERROR;
+}
+```
+
+Then:
+
+```cpp
+SwitchState left =
+    readGameSwitch(LEFT_UP_PIN, LEFT_DOWN_PIN);
+
+SwitchState right =
+    readGameSwitch(RIGHT_UP_PIN, RIGHT_DOWN_PIN);
+```
+
+DO NOT reverse the physical switch directions unless the game specification explicitly asks for reversed controls.
+
+Physical mapping:
+
+```text
+LEFT:
+    UP     GPIO 33 LOW
+    CENTER GPIO 33/32 HIGH
+    DOWN   GPIO 32 LOW
+
+RIGHT:
+    UP     GPIO 26 LOW
+    CENTER GPIO 26/25 HIGH
+    DOWN   GPIO 25 LOW
+```
+
+If actions should happen only once when a switch changes position, maintain previous switch states inside the game and perform edge detection.
+
+---
+
+# 11. RETURN TO MAIN MENU
+
+DO NOT implement your own ordinary "left button exits game" behavior unless the game specification explicitly requests an additional in-game menu.
+
+The launcher already handles the universal exit gesture:
+
+```text
+Hold LEFT BUTTON + RIGHT BUTTON
+for approximately 700 ms
+→ return to main menu
+```
+
+This happens outside the game's update function.
+
+The individual buttons therefore remain available to gameplay.
+
+Do not fight or replace this behavior.
+
+---
+
+# 12. MAIN LOOP / TIMING
+
+`update()` is called very frequently by the launcher.
+
+It MUST be nonblocking.
+
+Never use gameplay loops such as:
+
+```cpp
+while (playing) {
+    ...
+}
+```
+
+inside `update()`.
+
+Never wait for user input using a blocking loop.
+
+Avoid `delay()` during gameplay.
+
+Instead use `millis()` or `micros()`.
+
+Example:
+
+```cpp
+uint32_t lastFrameMs = 0;
+
+void update(const GameInput &input) {
+    const uint32_t now = millis();
+
+    handleInput(input, now);
+
+    if (now - lastFrameMs >= FRAME_INTERVAL_MS) {
+        lastFrameMs = now;
+
+        updateSimulation(now);
+        renderFrame();
+    }
+}
+```
+
+The function must return to the launcher after every update.
+
+---
+
+# 13. FRAME RATE
+
+Aim for smooth gameplay on the ESP32/ST7789.
+
+For motion-heavy games, target approximately:
+
+```text
+30 FPS minimum
+40-60 FPS where practical
+```
+
+Do not arbitrarily lock a game to a slow frame rate when the operations are inexpensive.
+
+Keep simulation and rendering timing separate where useful.
+
+For example:
+
+```cpp
+constexpr uint32_t FRAME_US = 20000; // 50 FPS
+```
+
+using `micros()`.
+
+Do not assume the TFT can efficiently redraw all 76,800 pixels every frame through ordinary Adafruit GFX calls.
+
+Optimize around SPI bandwidth.
+
+---
+
+# 14. MOST IMPORTANT RENDERING RULE
+
+DO NOT repeatedly call:
+
+```cpp
+display.fillScreen(...)
+```
+
+inside the gameplay update loop.
+
+That causes visible flashing, tearing, and poor frame rate.
+
+`fillScreen()` should normally happen only:
+
+- when entering the game
+- when intentionally changing to a completely different game screen/state
+
+During gameplay, redraw only what changed.
+
+---
+
+# 15. DIRTY-REGION RENDERING
+
+For moving objects, retain their previous screen position.
+
+Before drawing the new frame:
+
+1. erase/redraw the object's old region
+2. update the object
+3. draw it at its new position
+
+Example:
+
+```cpp
+erasePlayer(oldX, oldY);
+drawBackgroundRegion(oldX, oldY, PLAYER_W, PLAYER_H);
+
+drawPlayer(newX, newY);
+```
+
+If the background is simple, clearing a small rectangular region is acceptable:
+
+```cpp
+display.fillRect(
+    oldX,
+    oldY,
+    PLAYER_W,
+    PLAYER_H,
+    BACKGROUND_COLOR
+);
+```
+
+If the region contains scenery, recreate that scenery rather than simply filling it black.
+
+---
+
+# 16. HUD RENDERING
+
+Static HUD graphics should be drawn once.
+
+Values such as:
+
+- score
+- health
+- ammo
+- lives
+- timer
+- objective status
+
+should only redraw when the underlying value changes.
+
+Maintain cached values:
+
+```cpp
+int shownHealth = -1;
+
+void drawHealthIfChanged() {
+    if (health == shownHealth)
+        return;
+
+    display.fillRect(...);
+    display.print(health);
+
+    shownHealth = health;
+}
+```
+
+Do not redraw the entire HUD every frame.
+
+Design the HUD as part of the game presentation rather than dumping diagnostic text around the screen.
+
+Unless the game design says otherwise, keep gameplay information compact and avoid covering a large portion of the 240×320 playfield.
+
+---
+
+# 17. DRAWING PERFORMANCE
+
+The ESP32/ST7789 is not a desktop GPU.
+
+Prefer inexpensive primitives:
+
+```cpp
+drawFastHLine()
+drawFastVLine()
+fillRect()
+drawRect()
+fillCircle()
+drawCircle()
+drawLine()
+```
+
+Use large numbers of individual `drawPixel()` calls cautiously.
+
+Avoid clearing and reconstructing the entire scene every frame when a smaller update is possible.
+
+Where possible:
+
+- combine adjacent pixels into lines or rectangles
+- render static scenery once
+- use small dirty regions
+- avoid unnecessarily drawing objects hidden offscreen
+- avoid expensive floating-point operations in inner rendering loops
+- precompute constants
+- use integer/fixed-point math for hot paths when useful
+
+Correct visual behavior matters more than unnecessarily elaborate rendering techniques.
+
+---
+
+# 18. CAMERA-BASED GAMES
+
+If the game contains a scrolling world or camera, clearly separate:
+
+```text
+WORLD coordinates
+SCREEN coordinates
+```
+
+Use functions such as:
+
+```cpp
+int worldToScreenX(int worldX);
+int worldToScreenY(int worldY);
+```
+
+Do not accidentally treat the 240×320 display as if the camera is looking at the entire level.
+
+The camera should display the intended local gameplay area described in the game specification.
+
+For vehicle/character games, the player's vehicle should normally be large enough on screen to clearly understand its orientation, movement, weapons, animations, etc.
+
+Do not default to a distant overhead "whole map" camera unless explicitly specified.
+
+---
+
+# 19. GAME STATE MACHINE
+
+Do not scatter game-flow booleans throughout the implementation when a state machine is clearer.
+
+Prefer something such as:
+
+```cpp
+enum GameState {
+    STATE_INTRO,
+    STATE_PLAYING,
+    STATE_PLAYER_DEAD,
+    STATE_STAGE_CLEAR,
+    STATE_GAME_OVER,
+    STATE_VICTORY
+};
+```
+
+Then:
+
+```cpp
+void update(const GameInput &input) {
+    switch (state) {
+        case STATE_INTRO:
+            updateIntro(input);
+            break;
+
+        case STATE_PLAYING:
+            updatePlaying(input);
+            break;
+
+        ...
+    }
+}
+```
+
+Screen transitions should explicitly initialize the new state and draw whatever that screen needs.
+
+---
+
+# 20. RECOMMENDED INTERNAL ARCHITECTURE
+
+For a substantial game, organize the implementation roughly as:
+
+```text
+Constants/configuration
+
+Enums
+
+Structs/entities
+
+Persistent game state
+
+Timing state
+
+Input helpers
+
+Game initialization/reset
+
+World generation/setup
+
+Input processing
+
+Player simulation
+
+Enemy simulation
+
+Projectile simulation
+
+Collision detection
+
+Game rules
+
+Camera
+
+Audio/SFX
+
+Rendering helpers
+
+HUD rendering
+
+State-specific updates
+
+enter()
+
+update()
+
+REGISTER_GAME(...)
+```
+
+Do not literally create every subsystem if the particular game does not need it.
+
+---
+
+# 21. FUNCTION-LEVEL DESIGN
+
+Prefer small functions with explicit responsibilities.
+
+For example:
+
+```cpp
+resetGame()
+resetPlayer()
+createLevel()
+
+readControls()
+
+updatePlayer()
+updateEnemies()
+updateProjectiles()
+updatePhysics()
+
+resolveCollisions()
+applyDamage()
+spawnEnemy()
+destroyEnemy()
+
+updateCamera()
+
+eraseDynamicObjects()
+drawDynamicObjects()
+
+drawStaticWorld()
+drawHUDStatic()
+updateHUD()
+
+playShotSound()
+playExplosionSound()
+
+enterPlayingState()
+enterGameOverState()
+
+updatePlaying()
+updateGameOver()
+
+enter()
+update()
+```
+
+Avoid implementing the entire game in one enormous `update()` function.
+
+---
+
+# 22. MEMORY
+
+This is an ESP32 embedded program.
+
+Avoid:
+
+- dynamic allocation during gameplay
+- `new` / `delete`
+- STL containers when simple fixed arrays are sufficient
+- huge framebuffers unless justified
+- large temporary objects on the stack
+- unbounded collections
+
+Prefer:
+
+```cpp
+Enemy enemies[MAX_ENEMIES];
+Projectile projectiles[MAX_PROJECTILES];
+```
+
+with active flags.
+
+Example:
+
+```cpp
+struct Projectile {
+    bool active;
+    int16_t x;
+    int16_t y;
+    int8_t vx;
+    int8_t vy;
+};
+```
+
+---
+
+# 23. AUDIO
+
+Two buzzers exist:
+
+```text
+RIGHT buzzer / buzzer 1 = GPIO 22
+LEFT buzzer / buzzer 2  = GPIO 21
+```
+
+The launcher/music system may also use these outputs.
+
+Game sound effects must therefore be short and nonblocking.
+
+Do NOT use long blocking tone sequences.
+
+Do not use `delay()` to hold a sound.
+
+Use timed sound state if necessary.
+
+Example concept:
+
+```cpp
+void startSfx(int pin, int frequency, uint32_t durationMs);
+
+void updateSfx(uint32_t now);
+```
+
+The game should stop any game-generated continuous sound when it no longer applies.
+
+---
+
+# 24. CONTROL DESIGN
+
+Implement the controls EXACTLY as described in the provided game specification.
+
+Do not silently substitute a more conventional control scheme.
+
+The physical device is unusual:
+
+```text
+LEFT SWITCH:  UP / CENTER / DOWN
+RIGHT SWITCH: UP / CENTER / DOWN
+
+LEFT BUTTON
+RIGHT BUTTON
+```
+
+A control scheme must make physical sense with these actual controls.
+
+When reasoning about controls, imagine physically operating two vertical three-position toggle switches with separate buttons below them.
+
+---
+
+# 25. FIXED-TIMESTEP / MOVEMENT
+
+Movement should feel responsive.
+
+Unless explicitly required:
+
+- do not add momentum merely because movement exists
+- do not add acceleration/deceleration to simple digital movement
+- do not add camera smoothing that introduces obvious input lag
+
+If movement is intended to be immediate:
+
+```cpp
+position += direction * speed * dt;
+```
+
+and when input stops, movement stops.
+
+Use momentum only where called for by the game design.
+
+---
+
+# 26. COLLISION
+
+Implement actual gameplay collision rather than approximating everything as points.
+
+Use inexpensive collision primitives appropriate to the graphics:
+
+- axis-aligned rectangles
+- circles
+- line/rectangle tests
+- small hitboxes
+
+Separate visual size from collision size where useful.
+
+Make collision constants explicit.
+
+---
+
+# 27. RANDOMNESS
+
+If randomness is part of the game:
+
+- seed once in `enter()` or appropriate setup
+- do not reseed every frame
+- constrain procedural generation so required gameplay conditions remain achievable
+
+Gameplay-critical objects should not randomly spawn in impossible or unfair locations.
+
+---
+
+# 28. ROBUSTNESS
+
+Handle edge cases explicitly:
+
+- switch reports `SWITCH_ERROR`
+- button held across a state transition
+- player reaches screen/world boundary
+- arrays are full
+- enemy/projectile despawns
+- score reaches maximum display width
+- restarting after game over
+- returning to menu and relaunching game
+- `millis()` rollover-safe subtraction
+
+Use patterns such as:
+
+```cpp
+if ((uint32_t)(now - previousTime) >= interval)
+```
+
+rather than comparing absolute future timestamps when possible.
+
+---
+
+# 29. DO NOT BREAK THE LAUNCHER
+
+The game must NOT define:
+
+```cpp
+setup()
+loop()
+```
+
+It must NOT initialize the global hardware.
+
+It must NOT redefine:
+
+```cpp
+display
+GameInput
+GameModule
+SwitchState
+```
+
+It must NOT redefine hardware pin constants.
+
+It must NOT directly modify launcher screen state.
+
+It must NOT attempt to implement the launcher/menu.
+
+It must NOT contain another `REGISTER_GAME` besides its own single registration.
+
+---
+
+# 30. DO NOT SIMPLIFY THE SPEC
+
+Implement every required subsystem from the game specification.
+
+Do not omit something because:
+
+- it is difficult
+- the screen is small
+- it requires additional state
+- a simpler placeholder is easier
+
+If implementation details are unspecified, reason about what best fits the rest of the game and implement a sensible choice.
+
+Do not leave TODOs such as:
+
+```cpp
+// TODO add enemies
+// TODO make HUD
+// TODO implement collision
+```
+
+The delivered code should represent the complete requested game.
+
+---
+
+# 31. NO PLACEHOLDER GRAPHICS
+
+Do not implement a supposedly complete game using only:
+
+- text labels
+- debug rectangles
+- dots for every entity
+- temporary diagnostic rendering
+
+unless that is actually the intended art style.
+
+Use the available primitive graphics to make entities visually recognizable.
+
+For example, if something is a tank, it should visually read as a tank through its body, tracks, turret/cannon, orientation, effects, etc., rather than just being:
+
+```cpp
+display.fillRect(x, y, 8, 8, ST77XX_GREEN);
+```
+
+Presentation is part of the implementation.
+
+---
+
+# 32. COMMENTS
+
+Comment:
+
+- non-obvious algorithms
+- coordinate systems
+- rendering strategy
+- unusual control mappings
+- important performance decisions
+
+Do not clutter every trivial line with explanatory comments.
+
+---
+
+# 33. FINAL SELF-CHECK BEFORE OUTPUT
+
+Before returning the implementation, inspect your own code against this checklist.
+
+### Integration
+
+- [ ] No `setup()`
+- [ ] No `loop()`
+- [ ] Includes `GameAPI.h`
+- [ ] Includes `Hardware.h`
+- [ ] Uses unique namespace
+- [ ] Exactly one `REGISTER_GAME`
+- [ ] Implements `enter()`
+- [ ] Implements `update(const GameInput&)`
+- [ ] Does not modify launcher files
+
+### Display
+
+- [ ] Uses global `display`
+- [ ] Does NOT create another `Adafruit_ST7789`
+- [ ] Does NOT call `display.init()`
+- [ ] Does NOT call `SPI.begin()`
+- [ ] Rotation is portrait / `0`
+- [ ] Does not clear entire screen every gameplay frame
+- [ ] Rendering is designed around dirty regions/static layers
+- [ ] HUD only redraws values when needed
+
+### Controls
+
+- [ ] Left button = GPIO 27 / Button 2
+- [ ] Right button = GPIO 14 / Button 1
+- [ ] Left switch = GPIO 33/32
+- [ ] Right switch = GPIO 26/25
+- [ ] Active GPIO state is LOW
+- [ ] Controls match the game specification
+- [ ] Universal both-buttons exit is left to launcher
+
+### Runtime
+
+- [ ] `update()` always returns quickly
+- [ ] No gameplay `while` loop
+- [ ] No blocking waits
+- [ ] No long `delay()`
+- [ ] Uses `millis()` / `micros()` timing
+- [ ] Game can be entered, exited, and entered again
+- [ ] Arrays are bounded
+- [ ] No unnecessary dynamic allocation
+
+### Game completeness
+
+- [ ] All requested gameplay mechanics implemented
+- [ ] Win/lose/game-over behavior implemented
+- [ ] Collision implemented
+- [ ] HUD implemented
+- [ ] Audio/SFX implemented where specified
+- [ ] Visual effects implemented where specified
+- [ ] Restart behavior implemented
+- [ ] No TODO placeholders
+- [ ] No knowingly omitted feature
+
+If you notice a problem during this review, FIX THE CODE before outputting it.
+
+---
+
+# 34. RESPONSE FORMAT
+
+Do not give me a tutorial instead of the implementation.
+
+Return:
+
+1. A very short statement of what was implemented.
+2. Each required file in its own complete code block or as an attached/generated file.
+3. A final section:
+
+```text
+FILES TO COPY
+- Game_<GameName>.ino
+```
+
+or, for a two-file game:
+
+```text
+FILES TO COPY
+- Game_<GameName>.ino
+- <GameName>.h
+```
+
+Do not print fragments that I have to manually combine.
+
+The output must be ready to copy into `Jakeboy_Arcade/`, open `Jakeboy_Arcade.ino`, Verify, and Upload.

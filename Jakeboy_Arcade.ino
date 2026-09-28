@@ -352,13 +352,13 @@ void drawBootScreen() {
   display.setTextSize(3);
 
   display.setCursor(38, 90);
-  display.println("ESP32");
+  display.println("SharkBoy");
 
   display.setTextColor(ST77XX_WHITE);
   display.setTextSize(2);
 
   display.setCursor(38, 135);
-  display.println("GAME SYSTEM");
+  display.println("Shark Boy");
 
   display.drawRect(
     30,
