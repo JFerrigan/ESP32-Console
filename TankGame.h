@@ -2140,11 +2140,17 @@ static void simulateTick(const GameInput &input) {
   updateLifecycle(input);
 
   if (g.mode == Mode::GAME_OVER) {
-    // The two physical shooting buttons are the only restart controls on Game
-    // Over. Require a release first so a held fire button from the fatal hit
-    // cannot instantly skip the Game Over screen.
-    if (!input.leftButton && !input.rightButton) g.terminalReleased = true;
-    if (g.terminalReleased && (input.leftPressed || input.rightPressed)) startNewRun();
+    // The two physical shooting buttons are the only restart controls.
+    // First observe one clean frame with BOTH buttons released so a fire button
+    // held during the fatal hit cannot instantly restart the run. After that,
+    // either physical fire button by itself restarts. Use the live button state
+    // rather than leftPressed/rightPressed edge flags, which can be lost across
+    // the DYING -> GAME_OVER mode transition.
+    if (!g.terminalReleased) {
+      if (!input.leftButton && !input.rightButton) g.terminalReleased = true;
+    } else if (input.leftButton || input.rightButton) {
+      startNewRun();
+    }
     updateAudio();
     updateEffects();
     return;
