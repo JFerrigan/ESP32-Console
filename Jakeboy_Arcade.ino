@@ -50,8 +50,13 @@ alignas(4) uint8_t GameRenderMemory::bytes[GameRenderMemory::CAPACITY];
 //
 // Edit only this list when you care about a game's exact menu position.
 const char* const PINNED_GAME_ORDER[] = {
+  "SPACE EVADERS V2",
+  "PONG",
+  "FISHING",
+  "TANK",
+  "ICE COLD BEER",
   "DEEP VECTOR",
-  "ICE COLD BEER"
+  "METEOR SWEEP"
 };
 
 constexpr uint8_t PINNED_GAME_COUNT =
@@ -424,7 +429,7 @@ void drawBootScreen() {
   display.setTextSize(2);
 
   display.setCursor(38, 135);
-  display.println("Shark Boy");
+  display.println("By Jake :)");
 
   display.drawRect(
     30,

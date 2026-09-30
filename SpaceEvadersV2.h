@@ -1557,16 +1557,34 @@ void renderFrame(uint32_t nowMs, uint32_t nowUs) {
 // ============================================================
 
 void setupBunkers() {
-  const int16_t ys[3] = {40,136,232};
+  // Fully alternating bunker rows.
+  //
+  // Each bunker is 48 px tall. These Y positions alternate every 48-56 px:
+  //
+  //   Y=8    LEFT
+  //   Y=56   RIGHT
+  //   Y=112  LEFT
+  //   Y=160  RIGHT
+  //   Y=216  LEFT
+  //   Y=264  RIGHT
+  //
+  // The two three-bunker patterns are exact 180-degree mirrors:
+  // a left bunker at y maps to right y = 320 - (y + 48).
+  //
+  // This gives each player a bunker close to their own local-left wall
+  // while making the open spaces flip/interlock across the arena.
+  const int16_t leftYs[3]  = {8,112,216};
+  const int16_t rightYs[3] = {56,160,264};
+
   for (uint8_t i = 0; i < 3; ++i) {
     g.bunkers[i].owner = PlayerId::Left;
     g.bunkers[i].x = 49;
-    g.bunkers[i].y = ys[i];
+    g.bunkers[i].y = leftYs[i];
     resetBunker(g.bunkers[i]);
 
     g.bunkers[i+3].owner = PlayerId::Right;
     g.bunkers[i+3].x = 175;
-    g.bunkers[i+3].y = ys[i];
+    g.bunkers[i+3].y = rightYs[i];
     resetBunker(g.bunkers[i+3]);
   }
 }
@@ -1788,3 +1806,4 @@ void update(const GameInput &input) {
 }
 
 } // namespace SpaceEvadersV2
+

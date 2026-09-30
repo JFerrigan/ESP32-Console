@@ -51,6 +51,7 @@ constexpr uint32_t READY_DURATION_MS = 600UL;
 constexpr uint32_t TARGET_HIT_DURATION_MS = 650UL;
 constexpr uint32_t WRONG_HOLE_DURATION_MS = 650UL;
 constexpr uint32_t COMPLETE_DURATION_MS = 2000UL;
+constexpr uint32_t GAME_OVER_DURATION_MS = 2200UL;
 constexpr uint32_t SINK_ANIMATION_MS = 350UL;
 constexpr uint32_t DEBUG_INTERVAL_MS = 200UL;
 
@@ -74,6 +75,8 @@ constexpr float MAX_BALL_SPEED = 160.0f;
 constexpr float BALL_LOSS_GRACE = 2.0f;
 
 constexpr int TOTAL_TARGETS = 10;
+constexpr int STARTING_LIVES = 3;
+constexpr int BONUS_LIFE_TARGET = 7;
 
 // RGB565 colors not provided directly by ST77xx headers.
 constexpr uint16_t COLOR_GRAY      = 0x7BEF;
@@ -97,7 +100,8 @@ enum GameState {
   GAME_PLAYING,
   GAME_TARGET_HIT,
   GAME_WRONG_HOLE,
-  GAME_COMPLETE
+  GAME_COMPLETE,
+  GAME_OVER
 };
 
 // ============================================================
@@ -188,6 +192,10 @@ GameState gameState = GAME_BOOT;
 uint32_t stateStartedAt = 0;
 int currentTarget = 1;
 int capturedHoleIndex = -1;
+int lives = STARTING_LIVES;
+bool bonusLifeAwarded = false;
+bool bonusLifeNotice = false;
+uint8_t backgroundPhase = 18;
 
 float leftBarY = BAR_START_Y;
 float rightBarY = BAR_START_Y;
@@ -240,6 +248,9 @@ void enterGameState(GameState newState);
 void resetBallAndBar();
 void startCurrentTarget();
 void completeGame();
+void resetRun();
+void awardBonusLifeIfNeeded();
+void updateBackgroundForTarget();
 
 void updateGame(float dt);
 void updatePlaying(float dt);
@@ -258,7 +269,13 @@ void handleWrongHole(int holeIndex);
 void renderGame();
 void renderBootScreen();
 void renderCompleteScreen();
+void renderGameOverScreen();
 void renderBoardFull();
+void renderGradientBackground();
+void drawGradientRect(const RectI &rect);
+uint16_t gradientColorForY(int16_t y);
+uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b);
+void colorWheel(uint8_t pos, uint8_t &r, uint8_t &g, uint8_t &b);
 void renderPlayfield();
 void renderPlayfieldFrame();
 void renderHoles();
@@ -386,6 +403,10 @@ void initializeInputs() {
 void initializeGame() {
   currentTarget = 1;
   capturedHoleIndex = -1;
+  lives = STARTING_LIVES;
+  bonusLifeAwarded = false;
+  bonusLifeNotice = false;
+  backgroundPhase = 18;
   resetBallAndBar();
 
   const uint32_t nowUs = micros();
@@ -509,14 +530,45 @@ void resetBallAndBar() {
   captureStartBallY = ballY;
 }
 
+void updateBackgroundForTarget() {
+  // Give every round a different dark neon gradient without continuously
+  // repainting the whole TFT during play. That keeps the controls smooth.
+  int targetForColor = currentTarget;
+  if (targetForColor < 1) targetForColor = 1;
+  if (targetForColor > TOTAL_TARGETS) targetForColor = TOTAL_TARGETS;
+  backgroundPhase = (uint8_t)(18 + (targetForColor - 1) * 23);
+}
+
 void startCurrentTarget() {
+  bonusLifeNotice = false;
+  updateBackgroundForTarget();
   resetBallAndBar();
   enterGameState(GAME_READY);
 }
 
 void completeGame() {
   ballVelocityX = 0.0f;
+  backgroundPhase = 205;
   enterGameState(GAME_COMPLETE);
+}
+
+void resetRun() {
+  currentTarget = 1;
+  lives = STARTING_LIVES;
+  bonusLifeAwarded = false;
+  bonusLifeNotice = false;
+  capturedHoleIndex = -1;
+  updateBackgroundForTarget();
+  resetBallAndBar();
+}
+
+void awardBonusLifeIfNeeded() {
+  // The bonus is earned by successfully sinking target 7, once per run.
+  if (!bonusLifeAwarded && currentTarget == BONUS_LIFE_TARGET) {
+    ++lives;
+    bonusLifeAwarded = true;
+    bonusLifeNotice = true;
+  }
 }
 
 void updateGame(float dt) {
@@ -525,7 +577,7 @@ void updateGame(float dt) {
   switch (gameState) {
     case GAME_BOOT:
       if (elapsedStateMs >= BOOT_DURATION_MS) {
-        currentTarget = 1;
+        resetRun();
         startCurrentTarget();
       }
       break;
@@ -554,14 +606,26 @@ void updateGame(float dt) {
 
     case GAME_WRONG_HOLE:
       if (elapsedStateMs >= WRONG_HOLE_DURATION_MS) {
-        // Same target remains active.
-        startCurrentTarget();
+        if (lives <= 0) {
+          backgroundPhase = 246;
+          enterGameState(GAME_OVER);
+        } else {
+          // Same target remains active.
+          startCurrentTarget();
+        }
       }
       break;
 
     case GAME_COMPLETE:
       if (elapsedStateMs >= COMPLETE_DURATION_MS) {
-        currentTarget = 1;
+        resetRun();
+        startCurrentTarget();
+      }
+      break;
+
+    case GAME_OVER:
+      if (elapsedStateMs >= GAME_OVER_DURATION_MS) {
+        resetRun();
         startCurrentTarget();
       }
       break;
@@ -702,6 +766,8 @@ void handleTargetHit(int holeIndex) {
   captureStartBallX = ballX;
   captureStartBallY = ballY;
   ballVelocityX = 0.0f;
+
+  awardBonusLifeIfNeeded();
   enterGameState(GAME_TARGET_HIT);
 }
 
@@ -714,6 +780,11 @@ void handleWrongHole(int holeIndex) {
   captureStartBallX = ballX;
   captureStartBallY = ballY;
   ballVelocityX = 0.0f;
+
+  if (lives > 0) {
+    --lives;
+  }
+
   enterGameState(GAME_WRONG_HOLE);
 }
 
@@ -733,6 +804,15 @@ void renderGame() {
   if (gameState == GAME_COMPLETE) {
     if (forceFullRedraw) {
       renderCompleteScreen();
+      forceFullRedraw = false;
+      previousVisualValid = false;
+    }
+    return;
+  }
+
+  if (gameState == GAME_OVER) {
+    if (forceFullRedraw) {
+      renderGameOverScreen();
       forceFullRedraw = false;
       previousVisualValid = false;
     }
@@ -793,8 +873,75 @@ void renderGame() {
   previousVisualValid = true;
 }
 
+uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
+  return (uint16_t)(((uint16_t)(r & 0xF8) << 8) |
+                    ((uint16_t)(g & 0xFC) << 3) |
+                    ((uint16_t)b >> 3));
+}
+
+void colorWheel(uint8_t pos, uint8_t &r, uint8_t &g, uint8_t &b) {
+  // Smooth three-segment RGB color wheel.
+  if (pos < 85) {
+    r = (uint8_t)(255 - pos * 3);
+    g = (uint8_t)(pos * 3);
+    b = 0;
+  } else if (pos < 170) {
+    pos = (uint8_t)(pos - 85);
+    r = 0;
+    g = (uint8_t)(255 - pos * 3);
+    b = (uint8_t)(pos * 3);
+  } else {
+    pos = (uint8_t)(pos - 170);
+    r = (uint8_t)(pos * 3);
+    g = 0;
+    b = (uint8_t)(255 - pos * 3);
+  }
+}
+
+uint16_t gradientColorForY(int16_t y) {
+  int32_t clampedY = y;
+  if (clampedY < 0) clampedY = 0;
+  if (clampedY >= SCREEN_HEIGHT) clampedY = SCREEN_HEIGHT - 1;
+
+  // Sweep through a broad section of the color wheel vertically.
+  const uint8_t verticalOffset =
+      (uint8_t)((clampedY * 112L) / (SCREEN_HEIGHT - 1));
+  const uint8_t wheelPos = (uint8_t)(backgroundPhase + verticalOffset);
+
+  uint8_t r, g, b;
+  colorWheel(wheelPos, r, g, b);
+
+  // Keep the gradient dark and rich so the white ball/bar and bright target
+  // colors stay extremely readable.
+  r = (uint8_t)(4 + ((uint16_t)r * 50U) / 255U);
+  g = (uint8_t)(4 + ((uint16_t)g * 48U) / 255U);
+  b = (uint8_t)(7 + ((uint16_t)b * 62U) / 255U);
+
+  return rgb565(r, g, b);
+}
+
+void drawGradientRect(const RectI &rect) {
+  if (!rect.valid) {
+    return;
+  }
+
+  const RectI clipped = clampRect(rect);
+  if (!clipped.valid) {
+    return;
+  }
+
+  for (int16_t y = clipped.y; y < clipped.y + clipped.h; ++y) {
+    display.drawFastHLine(clipped.x, y, clipped.w, gradientColorForY(y));
+  }
+}
+
+void renderGradientBackground() {
+  RectI full = {0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, true};
+  drawGradientRect(full);
+}
+
 void renderBootScreen() {
-  display.fillScreen(ST77XX_BLACK);
+  renderGradientBackground();
 
 #if SHOW_ORIENTATION_TEST
   drawCenteredText("TOP", 5, 1, ST77XX_CYAN);
@@ -807,16 +954,26 @@ void renderBootScreen() {
 }
 
 void renderCompleteScreen() {
-  display.fillScreen(ST77XX_BLACK);
+  renderGradientBackground();
   drawCenteredText("ALL 10", 105, 3, ST77XX_GREEN);
   drawCenteredText("COMPLETE", 145, 3, ST77XX_GREEN);
   drawCenteredText("ICE COLD BEER", 210, 2, ST77XX_WHITE);
 }
 
+void renderGameOverScreen() {
+  renderGradientBackground();
+  drawCenteredText("GAME OVER", 120, 3, ST77XX_RED);
+
+  char targetText[24];
+  snprintf(targetText, sizeof(targetText), "REACHED TARGET %d", currentTarget);
+  drawCenteredText(targetText, 170, 1, ST77XX_WHITE);
+  drawCenteredText("TRY AGAIN", 205, 2, ST77XX_YELLOW);
+}
+
 void renderBoardFull() {
   const VisualState visual = getCurrentVisualState();
 
-  display.fillScreen(ST77XX_BLACK);
+  renderGradientBackground();
   renderPlayfield();
   renderBar();
   renderBallVisual(visual);
@@ -929,22 +1086,33 @@ void renderBallVisual(const VisualState &visual) {
 
 void renderHUD() {
   char leftText[18];
+  char centerText[16];
   char rightText[12];
 
-  const int shownTarget = clampFloat((float)currentTarget, 1.0f, 10.0f);
-  snprintf(leftText, sizeof(leftText), "TARGET %d", shownTarget);
-  snprintf(rightText, sizeof(rightText), "%d / 10", shownTarget);
+  int shownTarget = currentTarget;
+  if (shownTarget < 1) shownTarget = 1;
+  if (shownTarget > TOTAL_TARGETS) shownTarget = TOTAL_TARGETS;
 
-  // Clear only the HUD band so repeated text never smears.
-  display.fillRect(0, 0, SCREEN_WIDTH, 19, ST77XX_BLACK);
+  snprintf(leftText, sizeof(leftText), "TARGET %d", shownTarget);
+  snprintf(centerText, sizeof(centerText), "LIVES %d", lives);
+  snprintf(rightText, sizeof(rightText), "%d / %d", shownTarget, TOTAL_TARGETS);
+
+  // Restore the gradient in the HUD band so text never smears.
+  RectI hudRect = {0, 0, SCREEN_WIDTH, 19, true};
+  drawGradientRect(hudRect);
 
   display.setTextSize(1);
-  display.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+  display.setTextColor(ST77XX_WHITE);
   display.setCursor(5, 6);
   display.print(leftText);
 
   int16_t x1, y1;
   uint16_t w, h;
+
+  display.getTextBounds(centerText, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor((SCREEN_WIDTH - (int16_t)w) / 2, 6);
+  display.print(centerText);
+
   display.getTextBounds(rightText, 0, 0, &x1, &y1, &w, &h);
   display.setCursor(SCREEN_WIDTH - 5 - (int16_t)w, 6);
   display.print(rightText);
@@ -974,7 +1142,13 @@ void renderStateOverlay() {
 
     display.fillRoundRect(35, 132, 170, 52, 7, ST77XX_BLACK);
     display.drawRoundRect(35, 132, 170, 52, 7, ST77XX_GREEN);
-    drawCenteredText(hitText, 148, 2, ST77XX_GREEN);
+
+    if (bonusLifeNotice) {
+      drawCenteredText(hitText, 141, 2, ST77XX_GREEN);
+      drawCenteredText("+1 LIFE!", 169, 1, ST77XX_YELLOW);
+    } else {
+      drawCenteredText(hitText, 148, 2, ST77XX_GREEN);
+    }
     return;
   }
 
@@ -988,9 +1162,11 @@ void renderStateOverlay() {
       drawCenteredText("MISS", 140, 3, ST77XX_RED);
     }
 
-    char targetText[20];
-    snprintf(targetText, sizeof(targetText), "TARGET %d", currentTarget);
-    drawCenteredText(targetText, 172, 1, ST77XX_WHITE);
+    char statusText[24];
+    snprintf(statusText, sizeof(statusText), "%d %s LEFT",
+             lives, (lives == 1) ? "LIFE" : "LIVES");
+    drawCenteredText(statusText, 172, 1,
+                     (lives > 0) ? ST77XX_WHITE : ST77XX_RED);
   }
 }
 
@@ -1022,7 +1198,7 @@ void renderDebugOverlay() {
 
 void drawCenteredText(const char *text, int16_t y, uint8_t size, uint16_t color) {
   display.setTextSize(size);
-  display.setTextColor(color, ST77XX_BLACK);
+  display.setTextColor(color);
 
   int16_t x1, y1;
   uint16_t w, h;
@@ -1179,7 +1355,9 @@ void redrawStaticInsideRect(const RectI &rect) {
     return;
   }
 
-  display.fillRect(rect.x, rect.y, rect.w, rect.h, ST77XX_BLACK);
+  // Restore the exact same gradient pixels that were underneath the moving
+  // ball/bar, then repaint any static geometry touched by this dirty region.
+  drawGradientRect(rect);
 
   // Repaint any static hole whose visual footprint was touched.
   for (int i = 0; i < HOLE_COUNT; ++i) {
@@ -1214,6 +1392,7 @@ const char *gameStateName(GameState state) {
     case GAME_TARGET_HIT: return "TARGET_HIT";
     case GAME_WRONG_HOLE: return "WRONG_HOLE";
     case GAME_COMPLETE: return "COMPLETE";
+    case GAME_OVER: return "GAME_OVER";
     default: return "?";
   }
 }
@@ -1227,7 +1406,7 @@ void updateDebugOutput() {
   lastDebugAt = nowMs;
 
   Serial.printf(
-      "L=%s(raw:%s) R=%s(raw:%s) LY=%.2f RY=%.2f X=%.2f Y=%.2f VX=%.2f target=%d state=%s\n",
+      "L=%s(raw:%s) R=%s(raw:%s) LY=%.2f RY=%.2f X=%.2f Y=%.2f VX=%.2f target=%d lives=%d state=%s\n",
       switchStateName(leftSwitchState),
       switchStateName(leftSwitch.rawState),
       switchStateName(rightSwitchState),
@@ -1238,6 +1417,7 @@ void updateDebugOutput() {
       ballY,
       ballVelocityX,
       currentTarget,
+      lives,
       gameStateName(gameState));
 #endif
 }

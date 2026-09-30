@@ -4,10 +4,16 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 #include <math.h>
+#include <string.h>
 #include "GameAPI.h"
 #include "Hardware.h"
 
 namespace Pong {
+
+// Rendering revision: stable-kaleidoscope background pass.
+// The playfield background is now drawn once per state transition and is NOT
+// progressively swept/repainted during rallies.  This prevents background SPI
+// writes from ever wiping the moving ball between foreground draws.
 
 // ============================================================
 // DISPLAY / GAMEPLAY CONSTANTS
@@ -38,17 +44,22 @@ constexpr float BALL_MAX_BOUNCE_ANGLE = 1.01229f; // ~58 degrees
 constexpr float BALL_MIN_VERTICAL = 18.0f;
 
 constexpr uint32_t SIM_STEP_US = 10000;    // 100 Hz physics
-constexpr uint32_t RENDER_STEP_US = 20000; // 50 Hz render target
+constexpr uint32_t RENDER_STEP_US = 16667; // ~60 Hz render target
 constexpr uint8_t MAX_SIM_STEPS = 5;
 constexpr uint16_t POINT_HOLD_MS = 620;
 constexpr uint8_t WIN_SCORE = 7;
+
+// Full dirty rectangle for the two-line serve prompt. Keep this larger than
+// the actual glyph bounds so every text pixel is restored when play begins.
+constexpr int16_t SERVE_PROMPT_X = 68;
+constexpr int16_t SERVE_PROMPT_Y = PLAY_CENTER_Y + 43;
+constexpr int16_t SERVE_PROMPT_W = 122;
+constexpr int16_t SERVE_PROMPT_H = 28;
 
 constexpr uint8_t TRAIL_COUNT = 7;
 constexpr uint8_t MAX_PARTICLES = 24;
 constexpr uint8_t NEON_COUNT = 12;
 constexpr uint8_t BG_COUNT = 8;
-constexpr uint8_t BG_ROWS_PER_FRAME = 10;
-constexpr uint16_t BG_PHASE_STEP_MS = 280;
 
 // ============================================================
 // TYPES
@@ -141,8 +152,6 @@ int8_t waveLut[64];
 uint16_t scanline[SCREEN_W];
 uint8_t bgRowPhase[SCREEN_H];
 uint8_t backgroundTargetPhase = 0;
-int16_t backgroundSweepY = PLAY_TOP;
-uint32_t lastBackgroundPhaseMs = 0;
 
 uint32_t lastSimUs = 0;
 uint32_t simAccumulatorUs = 0;
@@ -278,24 +287,40 @@ void initPalette() {
 }
 
 uint16_t backgroundColorAt(int16_t x, int16_t y, uint8_t phase) {
+  // Stable kaleidoscope / stained-glass tunnel.  `phase` is chosen when the
+  // screen/state is entered, then remains fixed during a rally.  The image is
+  // therefore psychedelic without a scanline refresh visibly travelling down
+  // the TFT behind the ball.
   int16_t mx = abs(x - CENTER_X);
   int16_t my = abs(y - PLAY_CENTER_Y);
-  int16_t hi = max(mx, my);
-  int16_t lo = min(mx, my);
-  int16_t radial = hi + (lo >> 1);
 
-  int16_t w1 = waveLut[((x >> 1) + phase * 3) & 63];
-  int16_t w2 = waveLut[((y >> 1) + phase * 2) & 63];
-  int16_t w3 = waveLut[(((x + y) >> 2) + phase * 5) & 63] >> 1;
-  int16_t bands = radial + w1 + (w2 >> 1) + w3 + phase * 4;
-  uint8_t idx = (uint8_t)((bands >> 3) & 7);
+  // Diamond rings radiating from center.
+  int16_t diamond = mx + my;
 
-  // Sparse tiny highlights give the dark field some star-like energy.
+  // Fold both diagonals into a mirrored kaleidoscope coordinate.
+  int16_t diagA = abs(mx - my);
+  int16_t diagB = (mx + (my << 1));
+
+  // A small static warp prevents the geometry from looking like plain tiles.
+  // This is a LUT lookup only; no per-pixel sinf() during rendering.
+  int16_t warp = waveLut[((diamond >> 1) + phase * 5) & 63] >> 2;
+
+  uint8_t ring = (uint8_t)(((diamond + warp) >> 3) & 7);
+  uint8_t facet = (uint8_t)(((diagA >> 3) ^ (diagB >> 4)) & 7);
+  uint8_t idx = (uint8_t)((ring + facet + phase) & 7);
+
+  // Thin dark seams create a stained-glass / tunnel structure and keep the
+  // playfield subdued enough that the white-hot ball is always dominant.
+  bool seam = (((diamond + warp) & 0x0F) <= 1) ||
+              (((diagA + phase * 3) & 0x1F) <= 1);
+  if (seam) return rgb565(3, 3, 15);
+
   uint16_t base = bgPalette[idx];
-  uint8_t sparkle = (uint8_t)((x * 3 + y * 5 + phase * 11) & 0x7F);
-  if (sparkle == 0) {
-    return rgb565(32, 34, 70);
-  }
+
+  // Deterministic pinprick stars.  These are part of the static background,
+  // so dirty-region restoration recreates them exactly.
+  uint16_t hash = (uint16_t)(x * 29u + y * 47u + phase * 83u);
+  if ((hash & 0x01FF) == 0) return rgb565(42, 48, 88);
   return base;
 }
 
@@ -356,20 +381,52 @@ void restoreBackgroundRect(Rect r) {
   display.endWrite();
 }
 
-void advanceBackgroundSweep(uint32_t nowMs) {
-  if ((uint32_t)(nowMs - lastBackgroundPhaseMs) >= BG_PHASE_STEP_MS) {
-    lastBackgroundPhaseMs = nowMs;
-    ++backgroundTargetPhase;
+// Paddles only move vertically and keep a constant visual width/height.
+// Restoring the entire old glowing paddle rectangle every frame caused more
+// than 100 tiny ST7789 row writes per rendered frame.  Instead, restore only
+// the strip of the old rectangle that is no longer covered by the new paddle.
+// The overlapping portion is immediately painted over by drawPaddle().
+void restoreExposedPaddleArea(Rect oldRect, Rect newRect) {
+  oldRect = clippedToPlayfield(oldRect);
+  newRect = clippedToPlayfield(newRect);
+  if (!rectValid(oldRect)) return;
+  if (!rectValid(newRect)) {
+    restoreBackgroundRect(oldRect);
+    return;
   }
 
-  int16_t rowsLeft = PLAY_BOTTOM - backgroundSweepY + 1;
-  int16_t count = min((int16_t)BG_ROWS_PER_FRAME, rowsLeft);
-  if (count > 0) {
-    drawBackgroundRows(backgroundSweepY, count, backgroundTargetPhase);
-    backgroundSweepY += count;
+  // This fast path assumes vertical movement with unchanged X/width, which is
+  // exactly how Pong paddles move. Fall back safely if that ever changes.
+  if (oldRect.x != newRect.x || oldRect.w != newRect.w) {
+    restoreBackgroundRect(oldRect);
+    return;
   }
-  if (backgroundSweepY > PLAY_BOTTOM) backgroundSweepY = PLAY_TOP;
+
+  const int16_t oldBottom = oldRect.y + oldRect.h;
+  const int16_t newBottom = newRect.y + newRect.h;
+
+  // No overlap: restore the entire previous paddle footprint.
+  if (newRect.y >= oldBottom || newBottom <= oldRect.y) {
+    restoreBackgroundRect(oldRect);
+    return;
+  }
+
+  // Moving downward exposes a strip at the old top.
+  if (newRect.y > oldRect.y) {
+    restoreBackgroundRect({oldRect.x, oldRect.y, oldRect.w,
+                           (int16_t)(newRect.y - oldRect.y)});
+  }
+
+  // Moving upward exposes a strip at the old bottom.
+  if (newBottom < oldBottom) {
+    restoreBackgroundRect({oldRect.x, newBottom, oldRect.w,
+                           (int16_t)(oldBottom - newBottom)});
+  }
 }
+
+// During gameplay the procedural background is deliberately static.  It is
+// regenerated only inside dirty rectangles when a sprite moves away.  Visual
+// motion comes from the neon foreground, borders, particles and ball trail.
 
 // ============================================================
 // SWITCH INPUT
@@ -654,8 +711,6 @@ void startMatch(GameMode newMode) {
   gameplayFrameInitialized = false;
   victoryFrameInitialized = false;
   backgroundTargetPhase += 3;
-  backgroundSweepY = PLAY_TOP;
-  lastBackgroundPhaseMs = millis();
   drawGameplayBase();
 }
 
@@ -681,8 +736,11 @@ void launchBall() {
   state = STATE_PLAYING;
   stateStartedMs = millis();
   resetTrail();
-  // Restore the serve prompt area immediately. The divider is redrawn next frame.
-  restoreBackgroundRect({62, PLAY_CENTER_Y + 42, 116, 22});
+  // Restore the ENTIRE serve prompt immediately. The previous rectangle was
+  // too narrow and too short, leaving the right/bottom edges of the text behind.
+  // The divider is redrawn on the next rendered frame.
+  restoreBackgroundRect({SERVE_PROMPT_X, SERVE_PROMPT_Y,
+                         SERVE_PROMPT_W, SERVE_PROMPT_H});
   playServeSound();
 }
 
@@ -883,7 +941,7 @@ Rect paddleVisualRect(const Paddle &p, bool leftSide) {
   int16_t x = leftSide ? LEFT_PADDLE_X : RIGHT_PADDLE_X;
   return clippedToPlayfield({
       (int16_t)(x - PADDLE_GLOW),
-      (int16_t)((int16_t)floorf(p.y) - PADDLE_GLOW),
+      (int16_t)((int16_t)roundf(p.y) - PADDLE_GLOW),
       (int16_t)(PADDLE_W + PADDLE_GLOW * 2),
       (int16_t)(PADDLE_H + PADDLE_GLOW * 2)});
 }
@@ -1113,17 +1171,14 @@ void drawGameplayBase() {
 void renderGameplayFrame() {
   uint32_t nowMs = millis();
 
-  if (rectValid(oldLeftPaddleRect)) restoreBackgroundRect(oldLeftPaddleRect);
-  if (rectValid(oldRightPaddleRect)) restoreBackgroundRect(oldRightPaddleRect);
-  if (rectValid(oldBallRect)) restoreBackgroundRect(oldBallRect);
-  restoreOldParticleRects(false);
-
-  advanceBackgroundSweep(nowMs);
-  drawCenterDivider();
-  drawPlayfieldBorders();
+  const Rect newLeftPaddleRect = paddleVisualRect(leftPaddle, true);
+  const Rect newRightPaddleRect = paddleVisualRect(rightPaddle, false);
 
   ++menuHuePhase;
 
+  // Prepare the new trail before touching the currently visible ball.  The old
+  // ball therefore remains on-screen while all of the expensive background
+  // work happens, instead of being erased at the start of every frame.
   if (state == STATE_PLAYING) pushTrail();
   else if (state == STATE_SERVE) {
     for (uint8_t i = 0; i < TRAIL_COUNT; ++i) {
@@ -1132,9 +1187,32 @@ void renderGameplayFrame() {
     }
   }
 
+  // No full-width background refresh happens here.  The kaleidoscope is a
+  // stable playfield texture; only dirty regions are regenerated as sprites
+  // move.  This removes the old travelling refresh wave entirely.
+
+  // Restore only the newly exposed strips behind moving paddles. This is much
+  // cheaper than regenerating both full glow rectangles every frame.
+  if (rectValid(oldLeftPaddleRect))
+    restoreExposedPaddleArea(oldLeftPaddleRect, newLeftPaddleRect);
+  if (rectValid(oldRightPaddleRect))
+    restoreExposedPaddleArea(oldRightPaddleRect, newRightPaddleRect);
+
+  restoreOldParticleRects(false);
+
+  // Do every non-ball foreground update while the OLD ball is still visible.
+  // SPI TFT writes are visible immediately, so this deliberately minimizes the
+  // time between erasing the old ball and drawing the new one.
+  drawCenterDivider();
+  drawPlayfieldBorders();
   drawParticles(false);
   drawPaddle(leftPaddle, true);
   drawPaddle(rightPaddle, false);
+
+  // Erase the previous ball/trail only after all other frame work is complete,
+  // then immediately put the new ball back.  This is the critical anti-blink
+  // path: there are no background sweeps or unrelated draw calls in between.
+  if (rectValid(oldBallRect)) restoreBackgroundRect(oldBallRect);
 
   if (state == STATE_SERVE || state == STATE_PLAYING) {
     if (state == STATE_PLAYING) drawBallTrail();
@@ -1149,8 +1227,8 @@ void renderGameplayFrame() {
     drawScores(flash);
   }
 
-  oldLeftPaddleRect = paddleVisualRect(leftPaddle, true);
-  oldRightPaddleRect = paddleVisualRect(rightPaddle, false);
+  oldLeftPaddleRect = newLeftPaddleRect;
+  oldRightPaddleRect = newRightPaddleRect;
   oldBallRect = (state == STATE_SERVE || state == STATE_PLAYING)
                     ? ballVisualRect()
                     : invalidRect();
@@ -1485,7 +1563,6 @@ void enter() {
   pointScorer = 0;
   winner = 0;
   backgroundTargetPhase = 0;
-  backgroundSweepY = PLAY_TOP;
   menuHuePhase = 0;
   clearParticles();
   centerPaddles();
@@ -1501,7 +1578,6 @@ void enter() {
   simAccumulatorUs = 0;
   lastRenderUs = micros();
   stateStartedMs = millis();
-  lastBackgroundPhaseMs = millis();
   lastCpuDecisionMs = millis();
   lastHudAnimMs = millis();
 
