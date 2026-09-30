@@ -51,9 +51,9 @@ constexpr uint8_t WIN_SCORE = 7;
 
 // Full dirty rectangle for the two-line serve prompt. Keep this larger than
 // the actual glyph bounds so every text pixel is restored when play begins.
-constexpr int16_t SERVE_PROMPT_X = 68;
+constexpr int16_t SERVE_PROMPT_X = 52;
 constexpr int16_t SERVE_PROMPT_Y = PLAY_CENTER_Y + 43;
-constexpr int16_t SERVE_PROMPT_W = 122;
+constexpr int16_t SERVE_PROMPT_W = 136;
 constexpr int16_t SERVE_PROMPT_H = 28;
 
 constexpr uint8_t TRAIL_COUNT = 7;
@@ -141,6 +141,7 @@ uint8_t pointScorer = 0;
 uint8_t winner = 0;
 int8_t serveDirection = 1;
 int8_t nextServeDirection = 1;
+uint8_t servePlayer = 1; // 1 = left/P1, 2 = right/P2 (CPU in 1P)
 
 TrailPoint trail[TRAIL_COUNT];
 Particle particles[MAX_PARTICLES];
@@ -204,6 +205,14 @@ Rect invalidRect() {
 
 bool rectValid(const Rect &r) {
   return r.w > 0 && r.h > 0;
+}
+
+bool rectsOverlap(const Rect &a, const Rect &b) {
+  if (!rectValid(a) || !rectValid(b)) return false;
+  return a.x < b.x + b.w &&
+         a.x + a.w > b.x &&
+         a.y < b.y + b.h &&
+         a.y + a.h > b.y;
 }
 
 Rect unionRect(const Rect &a, const Rect &b) {
@@ -702,7 +711,8 @@ void startMatch(GameMode newMode) {
   rightScore = 0;
   pointScorer = 0;
   winner = 0;
-  nextServeDirection = (random(0, 2) == 0) ? -1 : 1;
+  servePlayer = (random(0, 2) == 0) ? 1 : 2;
+  nextServeDirection = (servePlayer == 1) ? 1 : -1;
   clearParticles();
   centerPaddles();
   resetBallForServe();
@@ -732,9 +742,20 @@ void launchBall() {
   ball.vy = ball.speed * frac;
   float vxMag = sqrtf(max(1.0f, ball.speed * ball.speed - ball.vy * ball.vy));
   ball.vx = serveDirection * vxMag;
-  nextServeDirection = -serveDirection;
   state = STATE_PLAYING;
   stateStartedMs = millis();
+
+  // Erase the complete stationary serve ball + largest pulsing ring BEFORE
+  // resetTrail() invalidates oldBallRect. The pulse reaches radius 14, so this
+  // 18px cleanup radius leaves extra margin for every drawn pixel.
+  constexpr int16_t SERVE_PULSE_CLEANUP_RADIUS = 18;
+  restoreBackgroundRect({
+      (int16_t)((int16_t)roundf(ball.x) - SERVE_PULSE_CLEANUP_RADIUS),
+      (int16_t)((int16_t)roundf(ball.y) - SERVE_PULSE_CLEANUP_RADIUS),
+      (int16_t)(SERVE_PULSE_CLEANUP_RADIUS * 2 + 1),
+      (int16_t)(SERVE_PULSE_CLEANUP_RADIUS * 2 + 1)
+  });
+
   resetTrail();
   // Restore the ENTIRE serve prompt immediately. The previous rectangle was
   // too narrow and too short, leaving the right/bottom edges of the text behind.
@@ -746,6 +767,12 @@ void launchBall() {
 
 void enterPointState(uint8_t scorer) {
   pointScorer = scorer;
+
+  // The player who LOST the point owns the next serve. A left-side serve
+  // always launches right toward P2; a right-side serve launches left toward P1.
+  servePlayer = (scorer == 1) ? 2 : 1;
+  nextServeDirection = (servePlayer == 1) ? 1 : -1;
+
   state = STATE_POINT;
   stateStartedMs = millis();
   ball.vx = 0.0f;
@@ -1117,13 +1144,21 @@ void drawHudStatic() {
 
 void drawScores(bool flash = false) {
   uint16_t panel = rgb565(5, 4, 19);
-  display.fillRect(74, 3, 42, 31, panel);
-  display.fillRect(129, 3, 42, 31, panel);
+  // Keep the two score panels symmetric around SCREEN_W / 2.
+  display.fillRect(72, 3, 42, 31, panel);
+  display.fillRect(126, 3, 42, 31, panel);
 
   uint16_t leftColor = (flash && pointScorer == 1) ? ST77XX_WHITE : playerColor(1, menuHuePhase / 4);
   uint16_t rightColor = (flash && pointScorer == 2) ? ST77XX_WHITE : playerColor(2, menuHuePhase / 4);
-  drawNeonDigit(86, 4, leftScore, leftColor);
-  drawNeonDigit(141, 4, rightScore, rightColor);
+  drawNeonDigit(84, 4, leftScore, leftColor);
+  drawNeonDigit(138, 4, rightScore, rightColor);
+
+  // drawScores() paints over part of the static VS label, so redraw it last.
+  // x=114 keeps the 12px-wide "VS" centered on the 240px display.
+  display.setTextSize(1);
+  display.setTextColor(rgb565(100, 95, 135), panel);
+  display.setCursor(114, 14);
+  display.print("VS");
 }
 
 // ============================================================
@@ -1132,14 +1167,31 @@ void drawScores(bool flash = false) {
 
 void drawServePrompt() {
   int16_t y = PLAY_CENTER_Y + 47;
-  uint16_t c = neonPalette[(menuHuePhase + 8) % NEON_COUNT];
+  uint16_t c = playerColor(servePlayer, menuHuePhase / 3);
   display.setTextSize(1);
   display.setTextColor(c);
-  display.setCursor(72, y);
-  display.print("PRESS EITHER BUTTON");
-  display.setCursor(91, y + 11);
-  display.setTextColor(ST77XX_WHITE);
-  display.print("TO SERVE");
+
+  if (mode == MODE_TWO_PLAYER) {
+    display.setCursor(96, y);
+    display.print(servePlayer == 1 ? "P1 SERVE" : "P2 SERVE");
+
+    display.setTextColor(ST77XX_WHITE);
+    display.setCursor(60, y + 11);
+    display.print(servePlayer == 1 ? "LEFT BUTTON TO SERVE"
+                                   : "RIGHT BUTTON TO SERVE");
+  } else if (servePlayer == 1) {
+    display.setCursor(90, y);
+    display.print("YOUR SERVE");
+    display.setTextColor(ST77XX_WHITE);
+    display.setCursor(78, y + 11);
+    display.print("PRESS A BUTTON");
+  } else {
+    display.setCursor(93, y);
+    display.print("CPU SERVE");
+    display.setTextColor(ST77XX_WHITE);
+    display.setCursor(93, y + 11);
+    display.print("GET READY");
+  }
 
   uint8_t pulse = (uint8_t)((millis() / 90) % 6);
   display.drawCircle((int16_t)ball.x, (int16_t)ball.y, 9 + pulse,
@@ -1209,10 +1261,19 @@ void renderGameplayFrame() {
   drawPaddle(leftPaddle, true);
   drawPaddle(rightPaddle, false);
 
-  // Erase the previous ball/trail only after all other frame work is complete,
-  // then immediately put the new ball back.  This is the critical anti-blink
-  // path: there are no background sweeps or unrelated draw calls in between.
-  if (rectValid(oldBallRect)) restoreBackgroundRect(oldBallRect);
+  // Erase the previous ball/trail only after all other frame work is complete.
+  // The ball dirty rectangle can overlap a paddle near impact. Since restoring
+  // that rectangle paints the procedural background, immediately repaint only
+  // the paddle(s) that were touched so the ball cleanup cannot make them blink.
+  if (rectValid(oldBallRect)) {
+    const bool touchedLeftPaddle = rectsOverlap(oldBallRect, newLeftPaddleRect);
+    const bool touchedRightPaddle = rectsOverlap(oldBallRect, newRightPaddleRect);
+
+    restoreBackgroundRect(oldBallRect);
+
+    if (touchedLeftPaddle) drawPaddle(leftPaddle, true);
+    if (touchedRightPaddle) drawPaddle(rightPaddle, false);
+  }
 
   if (state == STATE_SERVE || state == STATE_PLAYING) {
     if (state == STATE_PLAYING) drawBallTrail();
@@ -1333,11 +1394,6 @@ void drawModeSelectBase() {
   drawFullBackground(backgroundTargetPhase);
   display.fillRect(0, 0, SCREEN_W, 28, rgb565(4, 3, 17));
   display.drawFastHLine(0, 27, SCREEN_W, neonPalette[3]);
-
-  display.setTextSize(1);
-  display.setTextColor(rgb565(165, 150, 205), rgb565(4, 3, 17));
-  display.setCursor(57, 10);
-  display.print("PSYCHEDELIC ARCADE PONG");
 
   drawChromaticTitle();
   drawMenuPaddles();
@@ -1494,7 +1550,26 @@ void updateModeSelect(const GameInput &input) {
 
 void updateServe(const GameInput &input) {
   runSimulationClock();
-  if (actionPressed(input)) {
+
+  bool shouldLaunch = false;
+
+  if (mode == MODE_TWO_PLAYER) {
+    // Only the player who owns this serve may start the rally. Keep the
+    // launcher exit chord safe by rejecting a press while both are held.
+    if (!(input.leftButton && input.rightButton)) {
+      if (servePlayer == 1) shouldLaunch = input.leftPressed;
+      else shouldLaunch = input.rightPressed;
+    }
+  } else if (servePlayer == 1) {
+    // In 1P, both physical buttons belong to the human player.
+    shouldLaunch = actionPressed(input);
+  } else {
+    // The CPU cannot physically click a button, so when it lost the point it
+    // performs its own serve after a short readable pause.
+    shouldLaunch = (uint32_t)(millis() - stateStartedMs) >= 650;
+  }
+
+  if (shouldLaunch) {
     launchBall();
     return;
   }
