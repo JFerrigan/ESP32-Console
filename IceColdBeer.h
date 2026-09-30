@@ -584,7 +584,10 @@ void updateGame(float dt) {
 
     case GAME_READY:
       // Controls remain live/debounced, but the bar does not move here.
-      if (elapsedStateMs >= READY_DURATION_MS) {
+      // Do not start until both physical switches are centered.
+      if (elapsedStateMs >= READY_DURATION_MS &&
+          leftSwitchState == SWITCH_CENTER &&
+          rightSwitchState == SWITCH_CENTER) {
         enterGameState(GAME_PLAYING);
       }
       break;
@@ -610,8 +613,10 @@ void updateGame(float dt) {
           backgroundPhase = 246;
           enterGameState(GAME_OVER);
         } else {
-          // Same target remains active.
-          startCurrentTarget();
+          // Same target remains active. Reset the ball/bar and return to READY;
+          // READY will wait until both physical switches are centered.
+          resetBallAndBar();
+          enterGameState(GAME_READY);
         }
       }
       break;
@@ -1132,7 +1137,7 @@ void renderStateOverlay() {
     display.fillRoundRect(48, 128, 144, 58, 7, ST77XX_BLACK);
     display.drawRoundRect(48, 128, 144, 58, 7, ST77XX_YELLOW);
     drawCenteredText(targetText, 140, 2, ST77XX_YELLOW);
-    drawCenteredText("GET READY", 166, 1, ST77XX_WHITE);
+    drawCenteredText("CENTER BOTH SWITCHES", 166, 1, ST77XX_WHITE);
     return;
   }
 
@@ -1167,7 +1172,9 @@ void renderStateOverlay() {
              lives, (lives == 1) ? "LIFE" : "LIVES");
     drawCenteredText(statusText, 172, 1,
                      (lives > 0) ? ST77XX_WHITE : ST77XX_RED);
+    return;
   }
+
 }
 
 void renderOverlay() {
