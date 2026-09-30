@@ -31,8 +31,11 @@ constexpr float SHIP_HALF_X = 6.0f;
 constexpr float SHIP_HALF_Y = 7.0f;
 constexpr float LEFT_SHIP_X = 23.0f;
 constexpr float RIGHT_SHIP_X = 216.0f;
-constexpr float SHIP_MIN_Y = 18.0f;
-constexpr float SHIP_MAX_Y = 301.0f;
+// Ship sprite occupies centerY +/- 10 pixels. Let it reach the physical
+// screen edges so horizontal shots can hit every bunker row, including the
+// two extreme rows at the top and bottom of the staggered base layout.
+constexpr float SHIP_MIN_Y = 10.0f;
+constexpr float SHIP_MAX_Y = 309.0f;
 constexpr float START_Y = 159.5f;
 constexpr float LEFT_MUZZLE_X = 36.0f;
 constexpr float RIGHT_MUZZLE_X = 203.0f;
@@ -510,6 +513,16 @@ bool clearCell(uint8_t bunker, uint8_t row, uint8_t col) {
   return true;
 }
 
+bool allBunkersCleared(PlayerId owner) {
+  for (uint8_t b = 0; b < MAX_BUNKERS; ++b) {
+    if (g.bunkers[b].owner != owner) continue;
+    for (uint8_t r = 0; r < 12; ++r) {
+      if (g.bunkers[b].occupiedRows[r] != 0) return false;
+    }
+  }
+  return true;
+}
+
 Vec2 projectileVelocity(PlayerId owner) {
   return { owner == PlayerId::Left ? BOLT_SPEED : -BOLT_SPEED, 0.0f };
 }
@@ -838,6 +851,7 @@ RoundResult classifyTickResult(uint8_t hitMask) {
 }
 
 void commitRoundResult(RoundResult result, uint32_t nowMs);
+void commitBaseVictory(RoundResult result, uint32_t nowMs);
 
 void stepSimulation(float dt, uint32_t nowMs) {
   g.players[0].previousCenterY = g.players[0].centerY;
@@ -882,6 +896,18 @@ void stepSimulation(float dt, uint32_t nowMs) {
     ++g.diag.collisionGuardTrips;
   } else if (remaining > TIME_EPS) {
     advanceBodies(remaining, shipVy);
+  }
+
+  // Bunker destruction persists across ship deaths. Clearing every bunker cell
+  // owned by the opponent ends the whole match immediately.
+  const bool leftBasesGone = allBunkersCleared(PlayerId::Left);
+  const bool rightBasesGone = allBunkersCleared(PlayerId::Right);
+  if (leftBasesGone || rightBasesGone) {
+    const RoundResult baseResult =
+      (leftBasesGone && rightBasesGone) ? RoundResult::Draw :
+      leftBasesGone ? RoundResult::RightWin : RoundResult::LeftWin;
+    commitBaseVictory(baseResult, nowMs);
+    return;
   }
 
   const RoundResult result = classifyTickResult(hitMask);
@@ -1355,8 +1381,10 @@ void drawPhaseOverlay() {
     for (uint8_t pi = 0; pi < 2; ++pi) {
       PlayerId p = pi == 0 ? PlayerId::Left : PlayerId::Right;
       drawPlayerPanel(p);
+      const bool draw = g.match.result == RoundResult::Draw;
       const bool won = playerWonMatch(p);
-      drawCenteredText(p, won ? "YOU WIN" : "YOU LOSE", 151, 3, won ? C_GOLD : C_WHITE);
+      drawCenteredText(p, draw ? "DRAW" : (won ? "YOU WIN" : "YOU LOSE"),
+                       151, 3, (draw || won) ? C_GOLD : C_WHITE);
       drawCenteredText(p, g.match.rematchReady[pi] ? "READY" : "PRESS FIRE", 191, 2,
                        g.match.rematchReady[pi] ? (p == PlayerId::Left ? C_LEFT : C_RIGHT) : C_MUTED_TEXT);
       if (won) {
@@ -1613,7 +1641,8 @@ void prepareRound(uint32_t nowMs, uint32_t nowUs) {
   g.players[1].muzzleActive = false;
 
   clearProjectiles();
-  setupBunkers();
+  // Bunkers intentionally survive ship deaths / new rounds. They are only
+  // restored by resetMatch() when a completely new match begins.
   clearEffects();
   clearEventQueue();
   resetInputGates();
@@ -1635,6 +1664,7 @@ void resetMatch(uint32_t nowMs, uint32_t nowUs) {
   g.match.attemptNumber = 1;
   g.match.rematchReady[0] = false;
   g.match.rematchReady[1] = false;
+  setupBunkers();
   prepareRound(nowMs, nowUs);
 }
 
@@ -1682,6 +1712,28 @@ void finishFatality(uint32_t nowMs, uint32_t nowUs) {
     ++g.match.attemptNumber;
     prepareRound(nowMs, nowUs);
   }
+}
+
+void commitBaseVictory(RoundResult result, uint32_t nowMs) {
+  if (g.match.phase != Phase::Playing || g.match.result != RoundResult::None ||
+      result == RoundResult::None) return;
+
+  g.match.result = result;
+
+  // Reuse the existing three-pip match victory presentation/audio. A base clear
+  // is an immediate match win, regardless of the current ship-round score.
+  if (result == RoundResult::LeftWin) {
+    g.players[0].wins = 3;
+    markScoreDirty(PlayerId::Left);
+  } else if (result == RoundResult::RightWin) {
+    g.players[1].wins = 3;
+    markScoreDirty(PlayerId::Right);
+  }
+
+  clearProjectiles();
+  resetInputGates();
+  g.simAccumulator = 0;
+  enterMatchOver(nowMs);
 }
 
 void commitRoundResult(RoundResult result, uint32_t nowMs) {
