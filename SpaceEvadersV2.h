@@ -156,6 +156,7 @@ struct MatchState {
   Phase phase;
   RoundResult result;
   uint16_t attemptNumber;
+  bool fightReady[2];
   bool rematchReady[2];
   bool presentationReady;
   bool overlayVisible;
@@ -451,6 +452,7 @@ void queueFireAttempt(PlayerId p) {
 }
 
 void markPanelDirty(PlayerId p);
+void registerFightReady(PlayerId p, uint32_t nowMs);
 void registerRematchReady(PlayerId p, uint32_t nowMs);
 
 void pollInput(const GameInput &input, uint32_t nowMs) {
@@ -464,6 +466,9 @@ void pollInput(const GameInput &input, uint32_t nowMs) {
   if (g.match.phase == Phase::Playing) {
     if (leftAccepted) queueFireAttempt(PlayerId::Left);
     if (rightAccepted) queueFireAttempt(PlayerId::Right);
+  } else if (g.match.phase == Phase::FightSplash && g.match.presentationReady) {
+    if (leftAccepted) registerFightReady(PlayerId::Left, nowMs);
+    if (rightAccepted) registerFightReady(PlayerId::Right, nowMs);
   } else if (g.match.phase == Phase::MatchOver && g.match.presentationReady &&
              elapsedMs(nowMs, g.match.presentationStartedMs) >= MATCH_READY_LOCK_MS) {
     if (leftAccepted) registerRematchReady(PlayerId::Left, nowMs);
@@ -1366,7 +1371,10 @@ void drawPhaseOverlay() {
       PlayerId p = pi == 0 ? PlayerId::Left : PlayerId::Right;
       drawPlayerPanel(p);
       drawCenteredText(p, roundText, 141, 1, C_MUTED_TEXT);
-      drawCenteredText(p, "FIGHT!", 165, 3, C_GOLD);
+      drawCenteredText(p, "FIGHT!", 159, 3, C_GOLD);
+      drawCenteredText(p, "DESTROY ALL BASES", 190, 1, C_WHITE);
+      drawCenteredText(p, g.match.fightReady[pi] ? "READY" : "PRESS FIRE", 205, 1,
+                       g.match.fightReady[pi] ? (p == PlayerId::Left ? C_LEFT : C_RIGHT) : C_MUTED_TEXT);
     }
   } else if (g.match.phase == Phase::Fatality) {
     for (uint8_t pi = 0; pi < 2; ++pi) {
@@ -1539,7 +1547,6 @@ void onScenePresentationComplete(uint32_t nowMs) {
   if (g.match.phase == Phase::FightSplash || g.match.phase == Phase::Fatality || g.match.phase == Phase::MatchOver) {
     g.match.presentationReady = true;
     g.match.presentationStartedMs = nowMs;
-    if (g.match.phase == Phase::FightSplash) Audio::fight();
     if (g.match.phase == Phase::MatchOver) {
       if (g.players[0].wins >= 3) Audio::matchVictory(PlayerId::Left);
       else if (g.players[1].wins >= 3) Audio::matchVictory(PlayerId::Right);
@@ -1649,6 +1656,8 @@ void prepareRound(uint32_t nowMs, uint32_t nowUs) {
 
   g.match.phase = Phase::FightSplash;
   g.match.result = RoundResult::None;
+  g.match.fightReady[0] = false;
+  g.match.fightReady[1] = false;
   g.match.phaseStartedMs = nowMs;
   g.match.presentationReady = false;
   g.match.overlayVisible = true;
@@ -1765,6 +1774,24 @@ void commitRoundResult(RoundResult result, uint32_t nowMs) {
   g.simAccumulator = 0;
 }
 
+void registerFightReady(PlayerId p, uint32_t nowMs) {
+  const uint8_t i = playerIndex(p);
+  if (g.match.phase != Phase::FightSplash || !g.match.presentationReady ||
+      g.match.fightReady[i]) return;
+
+  g.match.fightReady[i] = true;
+  markPanelDirty(p);
+  emitEvent(EventType::PlayerReady, p, 0, 0);
+
+  if (g.match.fightReady[0] && g.match.fightReady[1]) {
+    // Both players explicitly armed the round. Start the short FIGHT hold now;
+    // startPlayingAfterOverlayRemoval() will re-arm buttons only after release,
+    // so these ready presses can never leak through as opening shots.
+    g.match.presentationStartedMs = nowMs;
+    Audio::fight();
+  }
+}
+
 void registerRematchReady(PlayerId p, uint32_t nowMs) {
   const uint8_t i = playerIndex(p);
   if (g.match.phase != Phase::MatchOver || g.match.rematchReady[i]) return;
@@ -1780,7 +1807,8 @@ void registerRematchReady(PlayerId p, uint32_t nowMs) {
 
 void updatePhase(uint32_t nowMs, uint32_t nowUs) {
   if (g.match.phase == Phase::FightSplash) {
-    if (g.match.presentationReady && !g.match.overlayRemoving &&
+    if (g.match.presentationReady && g.match.fightReady[0] && g.match.fightReady[1] &&
+        !g.match.overlayRemoving &&
         elapsedMs(nowMs, g.match.presentationStartedMs) >= FIGHT_HOLD_MS) {
       g.match.overlayVisible = false;
       g.match.overlayRemoving = true;

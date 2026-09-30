@@ -187,6 +187,7 @@ struct BossDefender {
   EnemyClass cls;
   bool released;
   bool countedDead;
+  bool deploying;
 };
 
 struct Player {
@@ -458,17 +459,52 @@ static bool circleIntersectsBox(float cx, float cy, float r, const StaticBox &b)
   return dist2(cx, cy, qx, qy) < r * r;
 }
 
+// The fallen fortress is a breached shell rather than one monolithic collision
+// box.  The center lane is the deployment tunnel used by the six boss tanks.
+// Rendering, player/enemy collision, projectile blocking, and line of sight all
+// use these same three pieces so there is no invisible wall across the breach.
+constexpr uint8_t FALLEN_FORTRESS_PIECES = 3;
+constexpr float FALLEN_WRECK_W = 28.0f;
+constexpr float FALLEN_WRECK_D = 17.0f;
+constexpr float FALLEN_WRECK_H = 5.0f;
+constexpr float FALLEN_BREACH_D = 7.0f;
+constexpr float FALLEN_RAIL_D = (FALLEN_WRECK_D - FALLEN_BREACH_D) * 0.5f;
+constexpr float FALLEN_REAR_W = 4.5f;
+
+static StaticBox fallenFortressPiece(uint8_t index) {
+  const float side = g.boss.collapseSide;
+  const float wreckX = g.boss.x + side * 7.0f;
+  const float railY = FALLEN_BREACH_D * 0.5f + FALLEN_RAIL_D * 0.5f;
+
+  if (index == 0) {
+    return {wreckX, g.boss.y - railY, FALLEN_WRECK_W, FALLEN_RAIL_D, FALLEN_WRECK_H, 9, true};
+  }
+  if (index == 1) {
+    return {wreckX, g.boss.y + railY, FALLEN_WRECK_W, FALLEN_RAIL_D, FALLEN_WRECK_H, 9, true};
+  }
+
+  // Close the inner end of the wreck while leaving the outer collapsed side open.
+  const float innerEdgeX = wreckX - side * (FALLEN_WRECK_W * 0.5f);
+  const float rearX = innerEdgeX + side * (FALLEN_REAR_W * 0.5f);
+  return {rearX, g.boss.y, FALLEN_REAR_W, FALLEN_BREACH_D, FALLEN_WRECK_H, 9, true};
+}
+
+static bool fallenFortressActive() {
+  return g.boss.phase >= BossPhase::FallenDeploying && g.boss.phase != BossPhase::Defeated;
+}
+
 static bool playerPositionBlocked(float x, float y, float radius) {
   float hw = corridorHalfWidth(y) - radius;
   if (x < -hw || x > hw || y < 1.0f || y > 1000.0f) return true;
   for (uint8_t i = 0; i < WORLD_BOX_COUNT; ++i) {
     if (WORLD_BOXES[i].solid && circleIntersectsBox(x, y, radius, WORLD_BOXES[i])) return true;
   }
-  // Fallen fortress body becomes cover/obstacle.
-  if (g.boss.phase >= BossPhase::FallenDeploying && g.boss.phase != BossPhase::Defeated) {
-    StaticBox wreck{g.boss.x + g.boss.collapseSide * 7.0f, g.boss.y,
-                    28.0f, 17.0f, 5.0f, 9, true};
-    if (circleIntersectsBox(x, y, radius, wreck)) return true;
+  // Fallen fortress collision exactly matches the visible breached shell.
+  if (fallenFortressActive()) {
+    for (uint8_t i = 0; i < FALLEN_FORTRESS_PIECES; ++i) {
+      StaticBox piece = fallenFortressPiece(i);
+      if (circleIntersectsBox(x, y, radius, piece)) return true;
+    }
   }
   return false;
 }
@@ -514,11 +550,12 @@ static bool lineBlocked(float x0, float y0, float x1, float y1, float *outT = nu
       if (t < best) best = t;
     }
   }
-  if (g.boss.phase >= BossPhase::FallenDeploying && g.boss.phase != BossPhase::Defeated) {
-    StaticBox wreck{g.boss.x + g.boss.collapseSide * 7.0f, g.boss.y,
-                    28.0f, 17.0f, 5.0f, 9, true};
-    float t;
-    if (segmentBox2D(x0, y0, x1, y1, wreck, t) && t < best) best = t;
+  if (fallenFortressActive()) {
+    for (uint8_t i = 0; i < FALLEN_FORTRESS_PIECES; ++i) {
+      StaticBox piece = fallenFortressPiece(i);
+      float t;
+      if (segmentBox2D(x0, y0, x1, y1, piece, t) && t < best) best = t;
+    }
   }
   if (best <= 1.0f) {
     if (outT) *outT = best;
@@ -546,14 +583,34 @@ static bool rayCircle(float ox, float oy, float dx, float dy,
 
 static bool segmentCircleHit(float x0, float y0, float x1, float y1,
                              float cx, float cy, float radius, float &tHit) {
-  float dx = x1 - x0, dy = y1 - y0;
-  float len = sqrtf(dx * dx + dy * dy);
-  if (len < 0.0001f) return false;
-  dx /= len; dy /= len;
-  float t;
-  if (!rayCircle(x0, y0, dx, dy, cx, cy, radius, len, t)) return false;
-  tHit = t / len;
-  return true;
+  // Robust swept point-vs-circle test. Enemy shells move a noticeable distance
+  // per simulation tick, so checking only a sample point can tunnel through the
+  // player. This also catches a shell that starts a tick already inside the hull.
+  const float sx = x0 - cx;
+  const float sy = y0 - cy;
+  const float r2 = radius * radius;
+  if (sx * sx + sy * sy <= r2) {
+    tHit = 0.0f;
+    return true;
+  }
+
+  const float dx = x1 - x0;
+  const float dy = y1 - y0;
+  const float a = dx * dx + dy * dy;
+  if (a < 0.0000001f) return false;
+
+  const float b = 2.0f * (sx * dx + sy * dy);
+  const float c = sx * sx + sy * sy - r2;
+  const float disc = b * b - 4.0f * a * c;
+  if (disc < 0.0f) return false;
+
+  const float root = sqrtf(disc);
+  const float inv2a = 0.5f / a;
+  const float t0 = (-b - root) * inv2a;
+  const float t1 = (-b + root) * inv2a;
+  if (t0 >= 0.0f && t0 <= 1.0f) { tHit = t0; return true; }
+  if (t1 >= 0.0f && t1 <= 1.0f) { tHit = t1; return true; }
+  return false;
 }
 
 // -----------------------------------------------------------------------------
@@ -883,13 +940,47 @@ static void updateEnemyOne(Enemy &e, EnemyClass cls, EnemyRole role, float dt) {
   }
 }
 
+static void updateBossDefenderDeployment(BossDefender &bd, uint8_t index, float dt) {
+  if (!bd.deploying || !bd.e.alive) return;
+
+  // Three slightly separated lanes keep successive defenders visually distinct.
+  // The target lies beyond the open outer face of the collapsed fortress.
+  const int lane = (int)(index % 3) - 1;
+  const float targetX = g.boss.x + g.boss.collapseSide * 25.0f;
+  const float targetY = g.boss.y + lane * 1.25f;
+  const float desired = angleTo(bd.e.x, bd.e.y, targetX, targetY);
+  bd.e.heading = approachAngle(bd.e.heading, desired, 2.8f * dt);
+  bd.e.turretHeading = bd.e.heading;
+  bd.e.active = true;
+  bd.e.windup = false;
+
+  constexpr float DEPLOY_SPEED = 4.8f;
+  float nx = bd.e.x + sinf(bd.e.heading) * DEPLOY_SPEED * dt;
+  float ny = bd.e.y + cosf(bd.e.heading) * DEPLOY_SPEED * dt;
+  if (!playerPositionBlocked(nx, ny, 1.0f)) {
+    bd.e.x = nx;
+    bd.e.y = ny;
+  }
+
+  // Once the tank is several units beyond the wreck mouth, hand it to normal AI.
+  float outward = (bd.e.x - g.boss.x) * g.boss.collapseSide;
+  if (outward >= 24.0f || dist2(bd.e.x, bd.e.y, targetX, targetY) < 1.5f * 1.5f) {
+    bd.deploying = false;
+    bd.e.reloadUntil = g.simNow + 700;
+  }
+}
+
 static void updateEnemies(float dt) {
   for (uint8_t i = 0; i < ENEMY_COUNT; ++i) {
     updateEnemyOne(enemies[i], ENEMY_DEFS[i].cls, ENEMY_DEFS[i].role, dt);
   }
   for (uint8_t i = 0; i < 6; ++i) {
     if (!bossDefenders[i].released || !bossDefenders[i].e.alive) continue;
-    updateEnemyOne(bossDefenders[i].e, bossDefenders[i].cls, EnemyRole::Pursuer, dt);
+    if (bossDefenders[i].deploying) {
+      updateBossDefenderDeployment(bossDefenders[i], i, dt);
+    } else {
+      updateEnemyOne(bossDefenders[i].e, bossDefenders[i].cls, EnemyRole::Pursuer, dt);
+    }
     if (!bossDefenders[i].e.alive && !bossDefenders[i].countedDead) {
       bossDefenders[i].countedDead = true;
       ++g.boss.defendersDestroyed;
@@ -898,34 +989,49 @@ static void updateEnemies(float dt) {
 }
 
 static void updateProjectiles(float dt) {
+  // Player pose is near the tank/camera center, while the incoming shell has
+  // visible width. Use a slightly expanded hull so visible edge hits count.
+  constexpr float PLAYER_SHELL_HIT_RADIUS = 1.15f;
+
   for (uint8_t i = 0; i < MAX_PROJECTILES; ++i) {
     Projectile &p = projectiles[i];
     if (!p.active) continue;
     if ((int32_t)(g.simNow - p.expires) >= 0) { p.active = false; continue; }
-    p.px = p.x; p.py = p.y;
-    float nx = p.x + p.vx * dt;
-    float ny = p.y + p.vy * dt;
-    bool hit = false;
-    float tWorld;
-    if (lineBlocked(p.x, p.y, nx, ny, &tWorld)) {
-      p.x += (nx - p.x) * tWorld;
-      p.y += (ny - p.y) * tWorld;
-      hit = true;
-    } else {
-      float tp;
-      if (segmentCircleHit(p.x, p.y, nx, ny, g.player.pose.x, g.player.pose.y, 0.85f, tp)) {
-        p.x += (nx - p.x) * tp;
-        p.y += (ny - p.y) * tp;
-        damagePlayer(p.damage);
-        hit = true;
-      } else {
-        p.x = nx; p.y = ny;
-      }
-    }
-    if (hit) {
+
+    p.px = p.x;
+    p.py = p.y;
+    const float nx = p.x + p.vx * dt;
+    const float ny = p.y + p.vy * dt;
+
+    // Resolve the earliest contact on the swept segment. The old world-first
+    // branch could consume a shell at a wall even when the player contact was
+    // slightly earlier on the same simulation step.
+    float tPlayer = 2.0f;
+    float tWorld = 2.0f;
+    const bool playerHit = segmentCircleHit(
+        p.x, p.y, nx, ny,
+        g.player.pose.x, g.player.pose.y, PLAYER_SHELL_HIT_RADIUS, tPlayer);
+    const bool worldHit = lineBlocked(p.x, p.y, nx, ny, &tWorld);
+
+    if (playerHit && (!worldHit || tPlayer <= tWorld)) {
+      p.x += (nx - p.x) * tPlayer;
+      p.y += (ny - p.y) * tPlayer;
+      damagePlayer(p.damage);
       spawnEffect(EffectType::Explosion, p.x, p.y, 300);
       p.active = false;
+      continue;
     }
+
+    if (worldHit) {
+      p.x += (nx - p.x) * tWorld;
+      p.y += (ny - p.y) * tWorld;
+      spawnEffect(EffectType::Explosion, p.x, p.y, 300);
+      p.active = false;
+      continue;
+    }
+
+    p.x = nx;
+    p.y = ny;
   }
 }
 
@@ -1017,15 +1123,21 @@ static void spawnBossDefender(uint8_t index) {
     EnemyClass::Light, EnemyClass::Medium, EnemyClass::Medium,
     EnemyClass::Medium, EnemyClass::Light, EnemyClass::Heavy
   };
-  float side = (index & 1) ? 1.0f : -1.0f;
-  float offsetY = -7.0f + (index % 3) * 5.0f;
+
+  const int lane = (int)(index % 3) - 1;
   BossDefender &bd = bossDefenders[index];
   bd.cls = classes[index];
   bd.released = true;
   bd.countedDead = false;
-  bd.e.x = g.boss.x + g.boss.collapseSide * 12.0f + side * 2.5f;
-  bd.e.y = g.boss.y + offsetY;
-  bd.e.heading = angleTo(bd.e.x, bd.e.y, g.player.pose.x, g.player.pose.y);
+  bd.deploying = true;
+
+  // Spawn inside the central tunnel, safely clear of both side rails.  Tanks first
+  // drive through the visible breach before switching to normal pursuit behavior.
+  bd.e.x = g.boss.x + g.boss.collapseSide * 8.0f;
+  bd.e.y = g.boss.y + lane * 1.8f;
+  float exitX = g.boss.x + g.boss.collapseSide * 25.0f;
+  float exitY = g.boss.y + lane * 1.25f;
+  bd.e.heading = angleTo(bd.e.x, bd.e.y, exitX, exitY);
   bd.e.turretHeading = bd.e.heading;
   bd.e.health = classHealth(bd.cls);
   bd.e.defIndex = index;
@@ -1035,6 +1147,12 @@ static void spawnBossDefender(uint8_t index) {
   bd.e.windupUntil = 0;
   bd.e.reloadUntil = g.simNow + 1500;
   bd.e.observedUntil = 0;
+
+  // Defensive fallback: if authored geometry changes later, never leave a newly
+  // released tank embedded in a solid piece.  Walk it toward the breach mouth.
+  for (uint8_t tries = 0; tries < 12 && playerPositionBlocked(bd.e.x, bd.e.y, 1.0f); ++tries) {
+    bd.e.x += g.boss.collapseSide * 1.0f;
+  }
 }
 
 static void updateBoss(float dt) {
@@ -1242,7 +1360,7 @@ static inline CamV worldToCam(float x, float y, float z) {
 }
 
 static bool projectCam(const CamV &v, ScreenV &s) {
-  if (v.d <= NEAR_D) return false;
+  if (v.d < NEAR_D) return false;
   s.x = 60.0f + FOCAL * v.r / v.d;
   s.y = (float)HORIZON_Y - FOCAL * v.h / v.d;
   s.invD = 1.0f / v.d;
@@ -1532,11 +1650,11 @@ static void drawEffect(const Effect &e) {
 
 static void drawWorldLine(Vec3 a, Vec3 b, uint8_t color) {
   CamV ca = worldToCam(a.x,a.y,a.z), cb = worldToCam(b.x,b.y,b.z);
-  if (ca.d <= NEAR_D && cb.d <= NEAR_D) return;
-  if (ca.d <= NEAR_D || cb.d <= NEAR_D) {
+  if (ca.d < NEAR_D && cb.d < NEAR_D) return;
+  if (ca.d < NEAR_D || cb.d < NEAR_D) {
     float t = (NEAR_D - ca.d) / (cb.d - ca.d);
     CamV q{ca.r + (cb.r-ca.r)*t, ca.h+(cb.h-ca.h)*t, NEAR_D};
-    if (ca.d <= NEAR_D) ca=q; else cb=q;
+    if (ca.d < NEAR_D) ca=q; else cb=q;
   }
   ScreenV pa,pb;
   if(!projectCam(ca,pa)||!projectCam(cb,pb)) return;
@@ -1598,9 +1716,25 @@ static void drawBoss() {
       }
     }
   } else {
+    // Draw the exact same breached shell used by collision/line-of-sight.
+    // The center tunnel remains visibly and physically open for deploying tanks.
+    for(uint8_t i=0;i<FALLEN_FORTRESS_PIECES;++i){
+      StaticBox piece=fallenFortressPiece(i);
+      drawBoxYaw(piece.x,piece.y,0,piece.w,piece.d,piece.h,0,piece.color);
+    }
+
+    // Upper wreckage sits entirely above the solid side rails, adding silhouette
+    // without creating any invisible horizontal collision footprint.
     float wreckX=g.boss.x+g.boss.collapseSide*7.0f;
-    drawBoxYaw(wreckX,g.boss.y,0,28,17,5,0,9);
-    drawBoxYaw(wreckX-g.boss.collapseSide*8.0f,g.boss.y,3.5f,12,10,4,0,25);
+    float railY=FALLEN_BREACH_D*0.5f+FALLEN_RAIL_D*0.5f;
+    drawBoxYaw(wreckX-g.boss.collapseSide*5.0f,g.boss.y-railY,3.5f,12,4.0f,4,0,25);
+    drawBoxYaw(wreckX+g.boss.collapseSide*5.5f,g.boss.y+railY,3.0f,7,3.6f,2.6f,0,10);
+
+    // A low torn threshold makes the deployment mouth obvious but is intentionally
+    // driveable; at this height it reads as debris/floor rather than a wall.
+    float mouthX=g.boss.x+g.boss.collapseSide*19.5f;
+    drawBoxYaw(mouthX,g.boss.y,0.02f,3.0f,FALLEN_BREACH_D-0.6f,0.10f,0,28);
+
     if(g.boss.phase==BossPhase::CoreOpening || g.boss.phase==BossPhase::CoreExposed){
       float t=g.boss.phase==BossPhase::CoreOpening?clampf(elapsedMs(g.simNow,g.boss.phaseStart)/1500.0f,0,1):1;
       float cx=g.boss.x+g.boss.collapseSide*(20.0f+3.0f*t);
