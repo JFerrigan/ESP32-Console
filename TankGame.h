@@ -637,9 +637,13 @@ static void damagePlayer(uint8_t damage) {
     g.player.health = 0;
     g.mode = Mode::DYING;
     g.modeStart = g.simNow;
+    g.terminalReleased = false; // used only if this death becomes GAME OVER
     if (g.player.lives > 0) --g.player.lives;
+    g.controlsArmed = false;
     stopGameAudio();
+    sfxExplosion();
     spawnEffect(EffectType::Explosion, g.player.pose.x, g.player.pose.y, 1000);
+    setMessage("TANK DESTROYED", 1700);
   }
 }
 
@@ -1258,13 +1262,33 @@ static void updateSafeBreadcrumb() {
 }
 
 static void respawnPlayer() {
-  float x = g.player.safeX, y = g.player.safeY;
+  // A normal death does NOT reset campaign progress or send the player back to
+  // the beach. Respawn at the death position/heading so the fight continues
+  // exactly where it left off. If dynamic boss geometry changed during the
+  // death/blackout and made that exact point invalid, fall back to the most
+  // recent safe breadcrumb rather than placing the tank inside solid geometry.
+  float x = g.player.pose.x;
+  float y = g.player.pose.y;
+  float heading = g.player.pose.heading;
+
   if (playerPositionBlocked(x, y, 0.85f)) {
-    x = 0;
-    y = clampf(g.player.pose.y - 18.0f, 8.0f, 930.0f);
-    while (playerPositionBlocked(x, y, 0.85f) && y > 8) y -= 4.0f;
+    x = g.player.safeX;
+    y = g.player.safeY;
+    heading = g.player.safeHeading;
   }
-  g.player.pose = {x, y, g.player.safeHeading};
+
+  // Final defensive fallback for an unusual geometry transition.
+  if (playerPositionBlocked(x, y, 0.85f)) {
+    x = 0.0f;
+    y = clampf(g.player.pose.y - 4.0f, 8.0f, 930.0f);
+    while (playerPositionBlocked(x, y, 0.85f) && y > 8.0f) y -= 4.0f;
+  }
+
+  g.player.pose = {x, y, heading};
+  g.player.safeX = x;
+  g.player.safeY = y;
+  g.player.safeHeading = heading;
+  g.player.nextSafeSave = g.simNow + 1000;
   g.player.health = 100;
   g.player.cannonReadyAt = g.simNow;
   g.player.mgRounds = 0;
@@ -1273,7 +1297,7 @@ static void respawnPlayer() {
   g.player.invulnerableUntil = 0;
   g.mode = Mode::RESPAWN_GATE;
   g.modeStart = g.simNow;
-  setMessage("CENTER TREADS", 2000);
+  setMessage("RESPAWN", 1200);
 }
 
 static void updateLifecycle(const GameInput &input) {
@@ -1286,7 +1310,11 @@ static void updateLifecycle(const GameInput &input) {
       setMessage("INVADE THE NORTH", 1100);
     }
   } else if (g.mode == Mode::DYING) {
-    if (elapsedMs(g.simNow, g.modeStart) >= 1000) {
+    // 0-1700 ms: destruction animation.
+    // 1700-2350 ms: guaranteed full-black hold (650 ms).
+    // Then automatically respawn in place. Only an actual game over waits for
+    // a fire-button press and resets the whole run back to the beach.
+    if (elapsedMs(g.simNow, g.modeStart) >= 2350) {
       if (g.player.lives == 0) {
         g.mode = Mode::GAME_OVER;
         g.modeStart = g.simNow;
@@ -1301,7 +1329,8 @@ static void updateLifecycle(const GameInput &input) {
       g.controlsArmed = true;
       g.mode = Mode::PLAYING;
       g.player.invulnerableUntil = g.simNow + 3000;
-      setMessage("ARMOR RESTORED", 900);
+      // No text callout here: the flashing cockpit/tank effect below is the
+      // feedback that the freshly respawned player is temporarily protected.
     }
   } else if (g.mode == Mode::GAME_OVER || g.mode == Mode::VICTORY_WAIT) {
     if (!input.leftButton && !input.rightButton) g.terminalReleased = true;
@@ -1818,6 +1847,133 @@ static bool playerInDangerZone() {
   return false;
 }
 
+// Full-screen first-person destruction sequence. The player's tank is the
+// cockpit, so the death animation happens through the view rather than drawing
+// a detached third-person tank sprite.
+static void drawDeathAnimation() {
+  if (g.mode != Mode::DYING) return;
+  const uint32_t age = elapsedMs(g.simNow, g.modeStart);
+  const int cx = 60;
+  const int cy = 102;
+
+  // Once the destruction animation is finished, hold a completely black frame.
+  // updateLifecycle() keeps this black for 650 ms before auto-respawning.
+  if (age >= 1700) {
+    fillRectLogical(0, 0, RW, RH, 0);
+    return;
+  }
+
+  // Immediate white-hot impact flash.
+  if (age < 110) {
+    uint8_t col = ((age / 35) & 1u) ? 21 : 1;
+    fillRectLogical(0, 0, RW, RH, col);
+    return;
+  }
+
+  // Expanding blast centered just above the mantlet. A dithered outer ring
+  // keeps the effect bright without needing alpha blending or another buffer.
+  if (age < 720) {
+    float t = (age - 110) / 610.0f;
+    int outer = 8 + (int)(t * 72.0f);
+    int inner = (int)(outer * 0.55f);
+    int inner2 = (int)(outer * 0.25f);
+    int outer2 = outer * outer;
+    int innerSq = inner * inner;
+    int inner2Sq = inner2 * inner2;
+    int y0 = clampi(cy - outer, 0, RH - 1);
+    int y1 = clampi(cy + outer, 0, RH - 1);
+    int x0 = clampi(cx - outer, 0, RW - 1);
+    int x1 = clampi(cx + outer, 0, RW - 1);
+    for (int y = y0; y <= y1; ++y) {
+      int dy = y - cy;
+      for (int x = x0; x <= x1; ++x) {
+        int dx = x - cx;
+        int d2 = dx*dx + dy*dy;
+        if (d2 > outer2) continue;
+        if (d2 <= inner2Sq) {
+          frame[y*RW+x] = ((x + y + (int)(age/18)) & 1) ? 1 : 21;
+        } else if (d2 <= innerSq) {
+          if (((x + y + (int)(age/25)) & 1) == 0) frame[y*RW+x] = 15;
+        } else if (((x*3 + y + (int)(age/31)) & 3) == 0) {
+          frame[y*RW+x] = 12;
+        }
+      }
+    }
+
+    // Deterministic radial sparks so there is no RNG state added to gameplay.
+    for (int i = 0; i < 14; ++i) {
+      float a = (TWO_PI_F * i / 14.0f) + age * 0.0017f;
+      int len = 8 + (int)(t * (18 + (i % 5) * 4));
+      int sx = cx + (int)(cosf(a) * (outer * 0.30f));
+      int sy = cy + (int)(sinf(a) * (outer * 0.30f));
+      int ex = cx + (int)(cosf(a) * len);
+      int ey = cy + (int)(sinf(a) * len);
+      lineLogical(sx, sy, ex, ey, (i & 1) ? 21 : 15);
+    }
+  }
+
+  // Smoke/failed electronics creep over the view after the blast.
+  if (age >= 520) {
+    uint32_t smokeAge = age - 520;
+    int coverage = clampi((int)(smokeAge / 10), 0, 105);
+    for (int y = 0; y < RH; y += 2) {
+      for (int x = 0; x < RW; x += 2) {
+        uint32_t h = hash2i(x + (int)(age/80), y * 3);
+        if ((int)(h % 120u) < coverage) put(x, y, (h & 4u) ? 30 : 0);
+      }
+    }
+  }
+
+  // Final dead-tank blackout before the respawn relocation occurs.
+  if (age >= 1180) {
+    int rows = clampi((int)((age - 1180) / 4), 0, RH);
+    fillRectLogical(0, RH - rows, RW, rows, 0);
+  }
+
+  if (age >= 900) {
+    fillRectLogical(39, 75, 43, 9, 30);
+    text3x5(43, 77, "DESTROYED", 21, 1);
+  }
+}
+
+// During spawn protection, pulse a bright shield-like flash over the visible
+// tank/cockpit. This makes invulnerability readable without another HUD message.
+static void drawSpawnInvulnerabilityFlash() {
+  if (g.mode != Mode::PLAYING) return;
+  if ((int32_t)(g.simNow - g.player.invulnerableUntil) >= 0) return;
+
+  const uint32_t remaining = g.player.invulnerableUntil - g.simNow;
+  const bool bright = ((g.simNow / 95u) & 1u) == 0;
+  if (!bright) return;
+
+  uint8_t c = ((g.simNow / 190u) & 1u) ? 31 : 1;
+  int recoil = ((int32_t)(g.simNow - g.player.cannonRecoilUntil) < 0) ? 4 : 0;
+  int baseY = 133 + recoil;
+
+  // Cockpit edge and mantlet outline.
+  lineLogical(0, 127, 119, 127, c);
+  lineLogical(4, 133, 115, 133, c);
+  lineLogical(48, baseY - 5, 72, baseY - 5, c);
+  lineLogical(48, baseY + 4, 72, baseY + 4, c);
+  lineLogical(48, baseY - 5, 48, baseY + 4, c);
+  lineLogical(72, baseY - 5, 72, baseY + 4, c);
+
+  // Flash along the cannon barrel itself.
+  for (int y = 83 + recoil; y < baseY - 5; y += 3) {
+    put(58, y, c);
+    put(62, y, c);
+  }
+
+  // Sparse energy shimmer across the armored deck. It fades in density during
+  // the last second so the player can feel the protection ending.
+  int stride = remaining < 1000 ? 10 : 6;
+  for (int y = 136; y < RH; y += 4) {
+    for (int x = 6 + ((y/4)&1)*2; x < 114; x += stride) {
+      if (((x + y + (int)(g.simNow/95u)) & 3) == 0) put(x, y, c);
+    }
+  }
+}
+
 static void drawCockpit() {
   // Angled armored deck integrated into lower world.
   for(int y=118;y<RH;++y){
@@ -1867,8 +2023,8 @@ static void drawCockpit() {
   dir%=8;if(dir<0)dir+=8;
   text3x5(84,139,"HDG",22,1); text3x5(89,146,dirs[dir],1,1);
 
-  // Lives, two rows of five tank pips.
-  for(int i=0;i<10;++i){int x=80+(i%5)*7,y=153+(i/5)*4;uint8_t c=i<g.player.lives?14:30;fillRectLogical(x,y,5,2,c);put(x+2,y-1,c);}
+  // Lives, three tank pips.
+  for(int i=0;i<3;++i){int x=94+i*7,y=153;uint8_t c=i<g.player.lives?14:30;fillRectLogical(x,y,5,2,c);put(x+2,y-1,c);}
 
   // Defender count during final battle.
   if(g.boss.phase==BossPhase::FallenDeploying){
@@ -1882,6 +2038,16 @@ static void drawCockpit() {
   if(!g.controlsArmed && (g.mode==Mode::BRIEFING||g.mode==Mode::RESPAWN_GATE)){
     text3x5(36,112,"CENTER TREADS",21,1);
   }
+}
+
+// Game Over is the only death-related state that waits for a click.  Keep it
+// visually separate from gameplay so the player never sees the death location
+// again after the blackout.
+static void drawGameOverOverlay() {
+  if (g.mode != Mode::GAME_OVER) return;
+  fillRectLogical(0, 0, RW, RH, 0);
+  text3x5(44, 66, "GAME OVER", 21, 1);
+  text3x5(22, 82, "PRESS FIRE TO RESTART", 1, 1);
 }
 
 static void presentFrame() {
@@ -1904,6 +2070,9 @@ static void render() {
   drawWarning(footZone,11);
   drawActors();
   drawCockpit();
+  drawSpawnInvulnerabilityFlash();
+  drawDeathAnimation();
+  drawGameOverOverlay();
   presentFrame();
 }
 
@@ -1926,7 +2095,7 @@ static void startNewRun() {
   g.controlsArmed = false;
   g.player.pose = {0.0f, 18.0f, 0.0f};
   g.player.health = 100;
-  g.player.lives = 10;
+  g.player.lives = 3;
   g.player.invulnerableUntil = 0;
   g.player.cannonReadyAt = g.simNow;
   g.player.mgReadyAt = g.simNow;
@@ -1970,7 +2139,18 @@ static void simulateTick(const GameInput &input) {
 
   updateLifecycle(input);
 
-  if (g.mode == Mode::GAME_OVER || g.mode == Mode::VICTORY_WAIT) {
+  if (g.mode == Mode::GAME_OVER) {
+    // The two physical shooting buttons are the only restart controls on Game
+    // Over. Require a release first so a held fire button from the fatal hit
+    // cannot instantly skip the Game Over screen.
+    if (!input.leftButton && !input.rightButton) g.terminalReleased = true;
+    if (g.terminalReleased && (input.leftPressed || input.rightPressed)) startNewRun();
+    updateAudio();
+    updateEffects();
+    return;
+  }
+
+  if (g.mode == Mode::VICTORY_WAIT) {
     if (!input.leftButton && !input.rightButton) g.terminalReleased = true;
     if (g.terminalReleased && (input.leftPressed || input.rightPressed)) startNewRun();
     updateAudio();
