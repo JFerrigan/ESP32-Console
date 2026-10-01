@@ -112,6 +112,7 @@ uint8_t gameCount() { return registeredGameCount; }
 const GameModule *gameAt(uint8_t index) {
   return index < registeredGameCount ? &registeredGames[index] : nullptr;
 }
+uint8_t gameAudioVolume() { return Music::volume; }
 
 // ============================================================
 // DISPLAY
@@ -971,10 +972,14 @@ void drawSettings() {
 }
 void enterMenu() {
   const bool returningFromTest = currentScreen == SCREEN_TEST;
+  const GameModule *leavingGame = (currentScreen == SCREEN_GAME) ? activeGame : nullptr;
+  const bool restartMusic = (leavingGame && leavingGame->ownsBuzzers && Music::enabled) ||
+                            (returningFromTest && Music::enabled);
+  if (leavingGame && leavingGame->leave) leavingGame->leave();
   activeGame = nullptr;
   currentScreen = SCREEN_MENU;
   exitChordStarted = 0;
-  if (returningFromTest && Music::enabled) Music::startMusic();
+  if (restartMusic) Music::startMusic();
   drawMainMenu();
 }
 void launch(int item) {
@@ -982,6 +987,7 @@ void launch(int item) {
     activeGame = gameAt(item);
     currentScreen = SCREEN_GAME;
     exitChordStarted = 0;
+    if (activeGame->ownsBuzzers && Music::enabled) Music::stopMusic();
     activeGame->enter();
     return;
   }
@@ -1039,7 +1045,8 @@ void setup() {
 }
 void loop() {
   updateInputs();
-  if (Music::enabled && currentScreen != SCREEN_TEST) Music::tick();
+  const bool gameOwnsBuzzers = currentScreen == SCREEN_GAME && activeGame && activeGame->ownsBuzzers;
+  if (Music::enabled && currentScreen != SCREEN_TEST && !gameOwnsBuzzers) Music::tick();
   if (currentScreen == SCREEN_MENU) updateMainMenu();
   else if (currentScreen == SCREEN_SETTINGS) {
     int old = settingsRow;
@@ -1064,7 +1071,10 @@ void loop() {
     // Both buttons held prevents a quick accidental exit while playing.
     if (leftButton && rightButton) {
       if (!exitChordStarted) exitChordStarted = millis();
-      if (millis() - exitChordStarted >= 2000) { enterMenu(); return; }
+      if (millis() - exitChordStarted >= 2000) {
+        const bool exitAllowed = !activeGame || !activeGame->allowMenuExit || activeGame->allowMenuExit();
+        if (exitAllowed) { enterMenu(); return; }
+      }
     } else exitChordStarted = 0;
     if (currentScreen == SCREEN_GAME && activeGame) {
       const GameInput input = {leftButton, rightButton,
