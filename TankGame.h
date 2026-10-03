@@ -224,6 +224,8 @@ struct GameState {
   char message[24];
   uint32_t messageUntil;
   uint16_t score;
+  bool restartAtBeach;
+  bool waterDeath;
 };
 
 static GameState g;
@@ -375,14 +377,27 @@ static bool switchesCentered() {
          digitalRead(RIGHT_UP_PIN) != LOW && digitalRead(RIGHT_DOWN_PIN) != LOW;
 }
 
+static bool bossFreeRoam(float y) {
+  return y >= 690.0f || g.boss.phase != BossPhase::Dormant;
+}
+
+constexpr float BOUNDARY_TANK_LENGTH = 3.0f;
+constexpr float BOUNDARY_PUSH_OUT = 10.0f * BOUNDARY_TANK_LENGTH;
+
 static float corridorHalfWidth(float y) {
-  if (y < 110) return 38.0f;
-  if (y < 210) return 34.0f;
-  if (y < 350) return 40.0f;
-  if (y < 490) return 44.0f;
-  if (y < 650) return 54.0f;
-  if (y < 710) return 70.0f;
-  return 88.0f;
+  if (bossFreeRoam(y)) return 160.0f;
+  if (y < 110) return 27.5f + BOUNDARY_PUSH_OUT;   // beach: hedgehog barricades
+  if (y < 210) return 30.0f + BOUNDARY_PUSH_OUT;   // defense line
+  if (y < 350) return 32.0f + BOUNDARY_PUSH_OUT;   // trenches: tighter and more claustrophobic
+  if (y < 490) return 36.0f + BOUNDARY_PUSH_OUT;   // town
+  if (y < 650) return 43.0f + BOUNDARY_PUSH_OUT;   // city
+  if (y < 690) return 52.0f + BOUNDARY_PUSH_OUT;   // fortress approach
+  return 160.0f;
+}
+
+static bool deepWaterAt(float x, float y) {
+  (void)x;
+  return y < 2.8f;
 }
 
 static uint8_t areaForY(float y) {
@@ -493,8 +508,11 @@ static bool fallenFortressActive() {
 }
 
 static bool playerPositionBlocked(float x, float y, float radius) {
-  float hw = corridorHalfWidth(y) - radius;
-  if (x < -hw || x > hw || y < 1.0f || y > 1000.0f) return true;
+  if (!bossFreeRoam(y)) {
+    float hw = corridorHalfWidth(y) - radius;
+    if (x < -hw || x > hw) return true;
+  }
+  if (y < 1.0f || y > 1000.0f) return true;
   for (uint8_t i = 0; i < WORLD_BOX_COUNT; ++i) {
     if (WORLD_BOXES[i].solid && circleIntersectsBox(x, y, radius, WORLD_BOXES[i])) return true;
   }
@@ -633,6 +651,20 @@ static void killSoldier(Soldier &s) {
   s.anim = 0;
   s.deathAt = g.simNow;
   g.score += 20;
+}
+
+static void startWaterDeath() {
+  if (g.mode != Mode::PLAYING || !g.controlsArmed) return;
+  if (g.player.lives > 0) --g.player.lives;
+  g.player.health = 0;
+  g.mode = Mode::DYING;
+  g.modeStart = g.simNow;
+  g.terminalReleased = false;
+  g.controlsArmed = false;
+  stopGameAudio();
+  g.restartAtBeach = true;
+  g.waterDeath = true;
+  setMessage("SUNK", 1800);
 }
 
 static void damagePlayer(uint8_t damage) {
@@ -1268,26 +1300,32 @@ static void updateSafeBreadcrumb() {
 }
 
 static void respawnPlayer() {
-  // A normal death does NOT reset campaign progress or send the player back to
-  // the beach. Respawn at the death position/heading so the fight continues
-  // exactly where it left off. If dynamic boss geometry changed during the
-  // death/blackout and made that exact point invalid, fall back to the most
-  // recent safe breadcrumb rather than placing the tank inside solid geometry.
   float x = g.player.pose.x;
   float y = g.player.pose.y;
   float heading = g.player.pose.heading;
 
-  if (playerPositionBlocked(x, y, 0.85f)) {
-    x = g.player.safeX;
-    y = g.player.safeY;
-    heading = g.player.safeHeading;
-  }
-
-  // Final defensive fallback for an unusual geometry transition.
-  if (playerPositionBlocked(x, y, 0.85f)) {
+  if (g.restartAtBeach) {
     x = 0.0f;
-    y = clampf(g.player.pose.y - 4.0f, 8.0f, 930.0f);
-    while (playerPositionBlocked(x, y, 0.85f) && y > 8.0f) y -= 4.0f;
+    y = 18.0f;
+    heading = 0.0f;
+  } else {
+    // A normal death does NOT reset campaign progress or send the player back to
+    // the beach. Respawn at the death position/heading so the fight continues
+    // exactly where it left off. If dynamic boss geometry changed during the
+    // death/blackout and made that exact point invalid, fall back to the most
+    // recent safe breadcrumb rather than placing the tank inside solid geometry.
+    if (playerPositionBlocked(x, y, 0.85f)) {
+      x = g.player.safeX;
+      y = g.player.safeY;
+      heading = g.player.safeHeading;
+    }
+
+    // Final defensive fallback for an unusual geometry transition.
+    if (playerPositionBlocked(x, y, 0.85f)) {
+      x = 0.0f;
+      y = clampf(g.player.pose.y - 4.0f, 8.0f, 930.0f);
+      while (playerPositionBlocked(x, y, 0.85f) && y > 8.0f) y -= 4.0f;
+    }
   }
 
   g.player.pose = {x, y, heading};
@@ -1303,6 +1341,8 @@ static void respawnPlayer() {
   g.player.invulnerableUntil = 0;
   g.mode = Mode::RESPAWN_GATE;
   g.modeStart = g.simNow;
+  g.restartAtBeach = false;
+  g.waterDeath = false;
   setMessage("RESPAWN", 1200);
 }
 
@@ -1905,23 +1945,211 @@ static void drawBoss() {
   }
 }
 
+static Vec3 cross3(Vec3 a, Vec3 b) {
+  return {a.y*b.z - a.z*b.y,
+          a.z*b.x - a.x*b.z,
+          a.x*b.y - a.y*b.x};
+}
+
+static Vec3 normalize3(Vec3 v) {
+  float m = sqrtf(v.x*v.x + v.y*v.y + v.z*v.z);
+  if (m < 0.0001f) return {0.0f, 0.0f, 0.0f};
+  return {v.x/m, v.y/m, v.z/m};
+}
+
+static void drawSteelBeam3D(Vec3 a, Vec3 b, float thickness) {
+  // Build an actual rectangular steel prism between arbitrary 3D endpoints.
+  // This lets the hedgehog members lean upward/downward instead of being
+  // horizontal boxes or screen-space lines.
+  Vec3 axis = normalize3({b.x-a.x, b.y-a.y, b.z-a.z});
+  Vec3 helper = fabsf(axis.z) < 0.88f ? Vec3{0.0f,0.0f,1.0f} : Vec3{0.0f,1.0f,0.0f};
+  Vec3 u = normalize3(cross3(axis, helper));
+  Vec3 v = normalize3(cross3(axis, u));
+  float h = thickness * 0.5f;
+  u = {u.x*h, u.y*h, u.z*h};
+  v = {v.x*h, v.y*h, v.z*h};
+
+  Vec3 q[8] = {
+    {a.x-u.x-v.x, a.y-u.y-v.y, a.z-u.z-v.z},
+    {a.x+u.x-v.x, a.y+u.y-v.y, a.z+u.z-v.z},
+    {a.x+u.x+v.x, a.y+u.y+v.y, a.z+u.z+v.z},
+    {a.x-u.x+v.x, a.y-u.y+v.y, a.z-u.z+v.z},
+    {b.x-u.x-v.x, b.y-u.y-v.y, b.z-u.z-v.z},
+    {b.x+u.x-v.x, b.y+u.y-v.y, b.z+u.z-v.z},
+    {b.x+u.x+v.x, b.y+u.y+v.y, b.z+u.z+v.z},
+    {b.x-u.x+v.x, b.y-u.y+v.y, b.z-u.z+v.z}
+  };
+  const uint8_t tris[12][3] = {
+    {0,1,5},{0,5,4}, {1,2,6},{1,6,5},
+    {2,3,7},{2,7,6}, {3,0,4},{3,4,7},
+    {4,5,6},{4,6,7}, {0,2,1},{0,3,2}
+  };
+  for (uint8_t i=0; i<12; ++i) {
+    uint8_t col = (i & 3u) == 0u ? 26 : ((i & 3u) == 1u ? 9 : 8);
+    drawWorldTri(q[tris[i][0]], q[tris[i][1]], q[tris[i][2]], col);
+  }
+}
+
+static void drawCzechHedgehog(float x, float y) {
+  // Three massive steel beams cross through the same center like the real
+  // Czech hedgehogs in the reference image. Each member has one ground-contact
+  // end and one high end, giving the obstacle three feet and three raised arms.
+  // The raised ends stand above an enemy tank silhouette.
+  const float lowZ = 0.08f;
+  const float highZ = 3.15f;
+  const float beam = 0.48f;
+
+  // Left/right member: low on one side, high on the other.
+  drawSteelBeam3D({x-3.00f, y, lowZ},
+                  {x+3.00f, y, highZ}, beam);
+
+  // Front/back member slopes the opposite way.
+  drawSteelBeam3D({x, y-3.00f, highZ},
+                  {x, y+3.00f, lowZ}, beam);
+
+  // Third member runs diagonally through the first two, creating the strong
+  // six-arm "metal jack" silhouette visible in the supplied photograph.
+  drawSteelBeam3D({x-2.25f, y-2.25f, lowZ},
+                  {x+2.25f, y+2.25f, highZ}, beam);
+
+  // Chunky welded center plates make the intersection read as one heavy object.
+  drawBoxYaw(x, y, 1.25f, 1.10f, 1.10f, 0.72f, PI_F*0.125f, 26);
+  drawBoxYaw(x, y, 1.42f, 0.72f, 0.72f, 0.38f, PI_F*0.375f, 9);
+}
+
+static void drawBarbedFenceSegment(float wallX, float y, float side) {
+  constexpr float HALF_LEN = 3.15f;
+  drawBoxYaw(wallX, y - HALF_LEN, 0.0f, 0.24f, 0.24f, 1.75f, 0.0f, 16);
+  drawBoxYaw(wallX, y + HALF_LEN, 0.0f, 0.24f, 0.24f, 1.75f, 0.0f, 16);
+  for (int row = 0; row < 3; ++row) {
+    float z = 0.56f + row * 0.38f;
+    drawWorldLine({wallX, y - HALF_LEN, z}, {wallX, y + HALF_LEN, z}, 1);
+    for (int k = 0; k < 6; ++k) {
+      float yy = y - 2.6f + k * 1.05f;
+      drawWorldLine({wallX - 0.18f * side, yy, z + 0.10f},
+                    {wallX + 0.18f * side, yy + 0.26f, z - 0.10f}, 1);
+    }
+  }
+  // Low entanglement at the base makes the barrier feel continuous and flush
+  // with the invisible blocking wall.
+  drawBoxYaw(wallX + side * 0.18f, y, 0.02f, 0.22f, 6.10f, 0.14f, 0.0f, 13);
+}
+
+static void drawWreckedTankBarrier(float x, float y, float side) {
+  // Recognizable burnt-out tank hull parked lengthwise along the boundary.
+  const float yaw = side > 0.0f ? 0.05f : -0.05f;
+  drawBoxYaw(x, y, 0.0f, 3.8f, 4.0f, 0.72f, yaw, 9);           // tracks / lower hull
+  drawBoxYaw(x, y - 0.12f, 0.58f, 3.15f, 3.45f, 0.82f, yaw, 26); // upper hull
+  drawBoxYaw(x + side * 0.15f, y - 0.28f, 1.28f, 1.65f, 1.55f, 0.56f,
+             yaw + side * 0.10f, 10);                           // crooked turret
+  drawBoxYaw(x - side * 0.95f, y - 0.46f, 1.48f, 2.35f, 0.24f, 0.20f,
+             yaw + side * 0.10f, 9);                            // broken gun barrel
+
+  // Dark track gaps / battle damage accents.
+  drawBoxYaw(x - side * 1.45f, y, 0.10f, 0.32f, 3.35f, 0.34f, yaw, 30);
+  drawBoxYaw(x + side * 1.45f, y, 0.10f, 0.32f, 3.35f, 0.34f, yaw, 30);
+  drawBoxYaw(x + side * 0.62f, y + 0.72f, 0.88f, 0.48f, 0.50f, 0.24f, yaw, 28);
+}
+
+static void drawWreckedCarBarrier(float x, float y, float side, uint32_t variant) {
+  // Low, readable 1940s-style wrecked car silhouette. Cars are aligned with
+  // the wall so neighboring wrecks visually join into a continuous barricade.
+  float skew = (variant & 1u) ? 0.035f : -0.035f;
+  if (side < 0.0f) skew = -skew;
+
+  // Wheels first so the body visibly sits on them.
+  const float wheelX = 1.22f;
+  const float wheelY = 1.22f;
+  drawBoxYaw(x - wheelX, y - wheelY, 0.05f, 0.34f, 0.62f, 0.54f, skew, 30);
+  drawBoxYaw(x + wheelX, y - wheelY, 0.05f, 0.34f, 0.62f, 0.54f, skew, 30);
+  drawBoxYaw(x - wheelX, y + wheelY, 0.05f, 0.34f, 0.62f, 0.54f, skew, 30);
+  drawBoxYaw(x + wheelX, y + wheelY, 0.05f, 0.34f, 0.62f, 0.54f, skew, 30);
+
+  // Main body: long and low, with distinct hood/trunk masses.
+  drawBoxYaw(x, y, 0.34f, 2.85f, 4.05f, 0.62f, skew, 16);
+  drawBoxYaw(x, y - 1.36f, 0.75f, 2.62f, 1.18f, 0.32f, skew, 26); // hood
+  drawBoxYaw(x, y + 1.42f, 0.72f, 2.52f, 0.92f, 0.30f, skew, 26); // trunk
+
+  // Cabin and roof. Offset/tilt a little to sell the wrecked condition.
+  float crush = (variant & 2u) ? 0.12f : -0.10f;
+  drawBoxYaw(x + side * crush, y + 0.05f, 0.86f, 2.22f, 1.78f, 0.72f,
+             skew + side * 0.035f, 26);
+  drawBoxYaw(x + side * crush, y + 0.03f, 1.47f, 1.82f, 1.32f, 0.20f,
+             skew + side * 0.035f, 9);
+
+  // Dark windshield and side-window band make it read immediately as a car.
+  drawBoxYaw(x + side * 0.02f, y - 0.66f, 1.14f, 1.70f, 0.10f, 0.44f,
+             skew, 30);
+  drawBoxYaw(x + side * 0.02f, y + 0.55f, 1.14f, 1.70f, 0.10f, 0.40f,
+             skew, 30);
+
+  // Missing panel / rust-dark damage patch.
+  float damageY = (variant & 4u) ? 0.88f : -0.92f;
+  drawBoxYaw(x + side * 1.20f, y + damageY, 0.58f, 0.18f, 0.62f, 0.30f,
+             skew, 28);
+}
+
+static void drawBoundaryRange(uint8_t area, float areaStart, float areaEnd,
+                              float step, float visibleStart, float visibleEnd) {
+  if (visibleEnd < areaStart || visibleStart > areaEnd) return;
+
+  float first = fmaxf(visibleStart, areaStart);
+  int firstIndex = (int)floorf((first - areaStart) / step);
+  if (firstIndex < 0) firstIndex = 0;
+  float y = areaStart + firstIndex * step;
+  if (y < first - 0.001f) y += step;
+
+  for (; y <= areaEnd + 0.001f && y <= visibleEnd; y += step) {
+    if (bossFreeRoam(y)) continue;
+    const float hw = corridorHalfWidth(y);
+    const int worldIndex = (int)floorf((y - areaStart) / step + 0.5f);
+
+    for (int s = 0; s < 2; ++s) {
+      const float side = s == 0 ? -1.0f : 1.0f;
+
+      if (area == 0) {
+        // Each hedgehog extends ~3 units inward/outward. Center it so its inner
+        // arm ends exactly at the invisible collision boundary.
+        drawCzechHedgehog(side * (hw + 3.0f), y);
+      } else if (area == 1 || area == 2) {
+        drawBarbedFenceSegment(side * hw, y, side);
+      } else {
+        // Town/city barrier: fixed alternating wrecks. Their inner body edge is
+        // placed on the same invisible wall used by collision.
+        const bool tankHull = ((worldIndex + s) % 3) == 0;
+        if (tankHull) {
+          drawWreckedTankBarrier(side * (hw + 1.90f), y, side);
+        } else {
+          uint32_t variant = hash2i(worldIndex, 700 + s * 37 + area * 101);
+          drawWreckedCarBarrier(side * (hw + 1.43f), y, side, variant);
+        }
+      }
+    }
+  }
+}
+
+static void drawThemedBoundaryProps() {
+  // IMPORTANT: placements are anchored to fixed world coordinates, never to
+  // the player's current position. Only the visible range changes as the player
+  // moves, so props cannot slide, pop to a new phase, or shift under motion.
+  const float visibleStart = fmaxf(0.0f, g.player.pose.y - 58.0f);
+  const float visibleEnd = g.player.pose.y + 138.0f;
+
+  // Slight overlap between repeated pieces keeps each boundary visually solid.
+  drawBoundaryRange(0,   0.0f, 109.99f, 4.05f, visibleStart, visibleEnd); // hedgehogs
+  drawBoundaryRange(1, 110.0f, 209.99f, 6.00f, visibleStart, visibleEnd); // defense wire
+  drawBoundaryRange(2, 210.0f, 349.99f, 6.00f, visibleStart, visibleEnd); // trench wire
+  drawBoundaryRange(3, 350.0f, 489.99f, 3.82f, visibleStart, visibleEnd); // town wrecks
+  drawBoundaryRange(4, 490.0f, 649.99f, 3.82f, visibleStart, visibleEnd); // city wrecks
+  drawBoundaryRange(5, 650.0f, 689.99f, 3.82f, visibleStart, visibleEnd); // approach
+}
+
 static void drawStaticWorld() {
   for(uint8_t i=0;i<WORLD_BOX_COUNT;++i){
     float d2=dist2(WORLD_BOXES[i].x,WORLD_BOXES[i].y,g.player.pose.x,g.player.pose.y);
     if(d2<130.0f*130.0f) drawBox(WORLD_BOXES[i]);
   }
-
-  // Repeated roadside authored composition details: low wrecks/obstacles.
-  int base=(int)(g.player.pose.y/35.0f);
-  for(int k=-3;k<=4;++k){
-    int id=base+k; if(id<0) continue;
-    float y=id*35.0f+20.0f;
-    if(y>650) break;
-    uint32_t h=hash2i(id,17);
-    float side=(h&1)?1.0f:-1.0f;
-    float x=side*(corridorHalfWidth(y)-7.0f-(float)((h>>4)&7));
-    StaticBox p{x,y,3.0f+(h&3),2.5f,1.2f,16,false}; drawBox(p);
-  }
+  drawThemedBoundaryProps();
 }
 
 static void drawActors() {
@@ -1992,6 +2220,43 @@ static void drawDeathAnimation() {
   // updateLifecycle() keeps this black for 650 ms before auto-respawning.
   if (age >= 1700) {
     fillRectLogical(0, 0, RW, RH, 0);
+    return;
+  }
+
+  if (g.waterDeath) {
+    int waterTop = RH - clampi((int)(age / 10), 0, RH + 6);
+    if (waterTop < 0) waterTop = 0;
+
+    for (int y = waterTop; y < RH; ++y) {
+      for (int x = 0; x < RW; ++x) {
+        uint8_t col = (((x >> 2) + (y >> 1) + (int)(age / 45)) & 1) ? 17 : 31;
+        frame[y * RW + x] = col;
+      }
+    }
+
+    int foamY = clampi(waterTop, 0, RH - 1);
+    for (int x = 0; x < RW; ++x) {
+      int wave = foamY + (((x / 5) + (int)(age / 60)) & 1);
+      if (wave >= 0 && wave < RH) frame[wave * RW + x] = ((x + (int)(age/25)) & 2) ? 1 : 21;
+    }
+
+    // Cockpit sinks below the rising waterline and darkens out.
+    int sink = clampi((int)(age / 18), 0, 44);
+    fillRectLogical(0, clampi(126 + sink, 0, RH), RW, RH, 0);
+
+    for (int i = 0; i < 16; ++i) {
+      int bx = 10 + ((i * 37 + (int)(age * 0.7f)) % 100);
+      int by = RH - 8 - ((int)(age / 14) + i * 9) % 78;
+      if (by > waterTop + 3 && by < RH - 4) {
+        put(bx, by, 1);
+        if ((i & 1) == 0 && by > 1) put(bx, by - 1, 31);
+      }
+    }
+
+    if (age >= 920) {
+      fillRectLogical(47, 76, 26, 9, 30);
+      text3x5(50, 78, "SUNK", 21, 1);
+    }
     return;
   }
 
@@ -2235,6 +2500,8 @@ static void startNewRun() {
   g.player.safeX = 0; g.player.safeY = 18; g.player.safeHeading = 0;
   g.player.nextSafeSave = g.simNow + 1000;
   g.area = 0;
+  g.restartAtBeach = false;
+  g.waterDeath = false;
   g.lastOuterUs = micros();
   g.lastFrameUs = g.lastOuterUs - FRAME_US;
   setMessage("INVADE THE NORTH", 1200);
@@ -2300,6 +2567,7 @@ static void simulateTick(const GameInput &input) {
 
   if (g.mode == Mode::PLAYING) {
     updateDrive(1.0f / 60.0f);
+    if (deepWaterAt(g.player.pose.x, g.player.pose.y)) startWaterDeath();
     updateWeapons(input);
     updateSoldiers(1.0f / 60.0f);
     updateEnemies(1.0f / 60.0f);
