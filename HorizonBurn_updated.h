@@ -1407,8 +1407,6 @@ static inline void drawEnemy(StripCanvas& c,const ProjectedNote& n){
     lineLocal(c,{sx(-7),n.y},{sx(7),n.y},C_HIGHLIGHT);
   }
   if(n.scaleQ8>=141){
-    if(n.mask&LEFT_GUN) glyphLocal(c,'L',(int16_t)(n.x-14), (int16_t)(n.y-4),1,C_CYAN);
-    if(n.mask&RIGHT_GUN) glyphLocal(c,'R',(int16_t)(n.x+9), (int16_t)(n.y-4),1,C_PINK);
   }
   int32_t ae=n.timingErrorUs<0?-n.timingErrorUs:n.timingErrorUs;
   if(n.status!=NoteStatus::Flyby && n.status!=NoteStatus::DualBroken && ae<=(int32_t)cfg().goodUs){uint16_t cue=ae<=(int32_t)cfg().perfectUs?C_HIGHLIGHT:C_VIOLET_GLOW;drawBracket(c,n.x,n.y,cue);}
@@ -1433,11 +1431,11 @@ static inline void drawHUD(StripCanvas& c,const RenderSnapshot& s){
   hspan(c,8,231,31,C_DIM_MESH);if(s.progressPx>0)hspan(c,8,(int16_t)(8+s.progressPx),31,C_PINK);
 }
 
-static inline void drawFooter(StripCanvas& c){fillRectLocal(c,{0,308,240,12},C_DEEP_VOID);textLocal(c,"HOLD BOTH: MENU",{0,310,240,8},1,1,C_HIGHLIGHT);}
+static inline void drawFooter(StripCanvas& c){fillRectLocal(c,{0,308,240,12},C_DEEP_VOID);}
 
 static inline void drawTitle(StripCanvas& c,const RenderSnapshot& s){
-  drawSkySun(c);drawMountains(c);drawGround(c,s);textLocal(c,"HORIZON",{0,126,240,24},1,3,C_CYAN);textLocal(c,"BURN",{0,154,240,24},1,3,C_PINK);textLocal(c,"FIRE ON THE BEAT",{0,187,240,8},1,1,C_HIGHLIGHT);
-  drawSignatureShip(c,120,246);textLocal(c,"PRESS EITHER BUTTON",{0,294,240,8},1,1,C_HIGHLIGHT);drawFooter(c);
+  drawSkySun(c);drawMountains(c);drawGround(c,s);textLocal(c,"HORIZON",{0,126,240,24},1,3,C_CYAN);textLocal(c,"BURN",{0,154,240,24},1,3,C_PINK);
+  drawSignatureShip(c,120,246);textLocal(c,"PRESS TO START",{0,294,240,8},1,1,C_HIGHLIGHT);drawFooter(c);
 }
 
 static inline void drawDifficulty(StripCanvas& c,const RenderSnapshot& s){
@@ -1634,7 +1632,7 @@ inline void enter(){
 }
 
 inline void leave(){stopAudio();G.render.inFlight=false;clearNotesEffects();G.controls.menuPressMask=0;}
-inline bool allowMenuExit(){return true;}
+inline bool allowMenuExit(){return false;}
 
 inline void update(const GameInput& input){
   uint64_t now=advanceClock((uint32_t)micros());

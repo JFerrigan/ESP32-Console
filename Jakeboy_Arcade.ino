@@ -37,7 +37,7 @@
 #include "GameRenderMemory.h"
 #include "MusicPlayer.h"
 
-alignas(4) uint8_t GameRenderMemory::bytes[GameRenderMemory::CAPACITY];
+alignas(8) uint8_t GameRenderMemory::bytes[GameRenderMemory::CAPACITY];
 
 // Registration happens during startup. The fixed array avoids allocation.
 //
@@ -53,6 +53,8 @@ const char* const PINNED_GAME_ORDER[] = {
   "SPACE EVADERS V2",
   "PONG",
   "FISHING",
+  "DEEP HOOK",
+  "HORIZON BURN",
   "TANK",
   "ICE COLD BEER",
   "DEEP VECTOR",
@@ -940,20 +942,29 @@ void updateTestScreen() {
 // remain available to the game. The same gesture works in the music screen.
 uint32_t exitChordStarted = 0;
 int settingsRow = 0;
+int musicRow = 0;
 int shownTestLeft = -1, shownTestRight = -1;
 void drawMusicScreen() {
   drawHeader("MUSIC PLAYER");
-  display.setTextSize(2);
-  display.setTextColor(ST77XX_CYAN);
-  display.setCursor(15, 85); display.print("ABC MUSIC");
-  display.setTextColor(ST77XX_WHITE);
-  display.setCursor(15, 150); display.print("Playback: ");
-  display.print(Music::enabled ? "ON" : "OFF");
-  display.setCursor(15, 185); display.print("Volume: ");
-  display.print(Music::volume); display.print("%");
   display.setTextSize(1);
-  display.setCursor(12, 275); display.print("Settings: change playback / volume");
-  display.setCursor(12, 295); display.print("Hold BOTH buttons: menu");
+  display.setTextColor(musicRow == 0 ? ST77XX_YELLOW : ST77XX_WHITE);
+  display.setCursor(12, 72); display.print("SONG ");
+  display.print(Music::selectedSong + 1); display.print("/"); display.print(Music::SONG_COUNT);
+  display.setTextSize(2);
+  display.setCursor(12, 91); display.print(Music::currentSong().title);
+  display.setTextSize(1);
+  display.setCursor(12, 119); display.print(Music::currentSong().style);
+  display.setTextSize(2);
+  display.setTextColor(musicRow == 1 ? ST77XX_YELLOW : ST77XX_WHITE);
+  display.setCursor(15, 165); display.print("Playback: ");
+  display.print(Music::enabled ? "ON" : "OFF");
+  display.setTextColor(musicRow == 2 ? ST77XX_YELLOW : ST77XX_WHITE);
+  display.setCursor(15, 205); display.print("Volume: ");
+  display.print(Music::volume); display.print("%");
+  display.setTextSize(1); display.setTextColor(ST77XX_WHITE);
+  display.setCursor(12, 266); display.print("LEFT SWITCH: select row");
+  display.setCursor(12, 281); display.print("RIGHT SWITCH: song / volume");
+  display.setCursor(12, 296); display.print("LEFT BUTTON: menu");
 }
 void drawSettings() {
   drawHeader("SETTINGS");
@@ -970,16 +981,30 @@ void drawSettings() {
   display.setCursor(12, 249); display.print("RIGHT BUTTON: toggle / volume +");
   display.setCursor(12, 266); display.print("LEFT BUTTON: back to menu");
 }
+int songForGame(const char *title) {
+  if (strcmp(title, "ICE COLD BEER") == 0) return Music::SONG_HARBOR_WALTZ;
+  if (strcmp(title, "FISHING") == 0) return Music::SONG_MIDNIGHT_TRAIN;
+  if (strcmp(title, "DEEP VECTOR") == 0) return Music::SONG_CAVE_ECHO;
+  if (strcmp(title, "TANK") == 0) return Music::SONG_IRON_MARCH;
+  if (strcmp(title, "SPACE EVADERS") == 0 ||
+      strcmp(title, "SPACE EVADERS V2") == 0) return Music::SONG_NEON_SPRINT;
+  if (strcmp(title, "PONG") == 0) return Music::SONG_PIXEL_PARADE;
+  if (strcmp(title, "DEEP HOOK") == 0) return Music::SONG_SUNSET_BOSSA;
+  if (strcmp(title, "ODD STRIDE") == 0) return Music::SONG_DUST_ROAD;
+  if (strcmp(title, "METEOR SWEEP") == 0) return Music::SONG_CLOUDSTEP;
+  if (strcmp(title, "SKYHOOK") == 0 ||
+      strcmp(title, "SCRAP CLAW") == 0) return Music::SONG_NOCTURNE;
+  return -1;
+}
 void enterMenu() {
-  const bool returningFromTest = currentScreen == SCREEN_TEST;
   const GameModule *leavingGame = (currentScreen == SCREEN_GAME) ? activeGame : nullptr;
-  const bool restartMusic = (leavingGame && leavingGame->ownsBuzzers && Music::enabled) ||
-                            (returningFromTest && Music::enabled);
   if (leavingGame && leavingGame->leave) leavingGame->leave();
+  Music::playbackAllowed = false;
+  Music::stopMusic();
+  Music::gameMusicOwnsBuzzers = false;
   activeGame = nullptr;
   currentScreen = SCREEN_MENU;
   exitChordStarted = 0;
-  if (restartMusic) Music::startMusic();
   drawMainMenu();
 }
 void launch(int item) {
@@ -987,15 +1012,34 @@ void launch(int item) {
     activeGame = gameAt(item);
     currentScreen = SCREEN_GAME;
     exitChordStarted = 0;
-    if (activeGame->ownsBuzzers && Music::enabled) Music::stopMusic();
+    const int gameSong = songForGame(activeGame->title);
+    Music::gameMusicOwnsBuzzers = Music::enabled &&
+      (Music::manualSongOverride || gameSong >= 0);
+    Music::playbackAllowed = false;
+    Music::stopMusic();
+    if (Music::enabled && !Music::manualSongOverride && gameSong >= 0)
+      Music::selectSong(gameSong, false);
     activeGame->enter();
+    Music::playbackAllowed = Music::gameMusicOwnsBuzzers;
+    if (Music::playbackAllowed) Music::startMusic();
     return;
   }
   switch (item - gameCount()) {
-    case 0: currentScreen = SCREEN_MUSIC; drawMusicScreen(); break;
-    case 1: currentScreen = SCREEN_SETTINGS; drawSettings(); break;
+    case 0:
+      currentScreen = SCREEN_MUSIC;
+      Music::manualSongOverride = true;
+      Music::playbackAllowed = true;
+      if (Music::enabled) Music::startMusic();
+      musicRow = 0; drawMusicScreen();
+      break;
+    case 1:
+      currentScreen = SCREEN_SETTINGS;
+      Music::playbackAllowed = false;
+      Music::stopMusic();
+      drawSettings(); break;
     case 2:
-      if (Music::enabled) Music::stopMusic();
+      Music::playbackAllowed = false;
+      Music::stopMusic();
       currentScreen = SCREEN_TEST;
       drawTestScreenStatic();
       drawSwitchValue(60, leftSwitch);
@@ -1045,8 +1089,7 @@ void setup() {
 }
 void loop() {
   updateInputs();
-  const bool gameOwnsBuzzers = currentScreen == SCREEN_GAME && activeGame && activeGame->ownsBuzzers;
-  if (Music::enabled && currentScreen != SCREEN_TEST && !gameOwnsBuzzers) Music::tick();
+  if (Music::enabled && Music::playbackAllowed) Music::tick();
   if (currentScreen == SCREEN_MENU) updateMainMenu();
   else if (currentScreen == SCREEN_SETTINGS) {
     int old = settingsRow;
@@ -1057,9 +1100,9 @@ void loop() {
       Music::setEnabled(!Music::enabled); changed = true;
     } else if (settingsRow == 1) {
       int delta = 0;
-      if (rightSwitch == SWITCH_UP && previousRightSwitch != SWITCH_UP) delta = 10;
-      if (rightSwitch == SWITCH_DOWN && previousRightSwitch != SWITCH_DOWN) delta = -10;
-      if (rightButtonPressed()) delta = 10;
+      if (rightSwitch == SWITCH_UP && previousRightSwitch != SWITCH_UP) delta = 5;
+      if (rightSwitch == SWITCH_DOWN && previousRightSwitch != SWITCH_DOWN) delta = -5;
+      if (rightButtonPressed()) delta = 5;
       if (delta) { Music::setVolume(constrain((int)Music::volume + delta, 0, 100)); changed = true; }
     }
     if (changed) drawSettings();
@@ -1081,7 +1124,28 @@ void loop() {
                                leftButtonPressed(), rightButtonPressed()};
       activeGame->update(input);
     }
-    if (currentScreen == SCREEN_MUSIC && leftButtonPressed()) enterMenu();
+    if (currentScreen == SCREEN_MUSIC) {
+      int oldRow = musicRow;
+      if (leftSwitchMovedUp()) musicRow = (musicRow + 2) % 3;
+      if (leftSwitchMovedDown()) musicRow = (musicRow + 1) % 3;
+      bool changed = oldRow != musicRow;
+      const bool valueUp = rightSwitchMovedUp();
+      const bool valueDown = rightSwitchMovedDown();
+      if (rightButtonPressed()) {
+        if (musicRow == 0) Music::selectSong(Music::selectedSong + 1);
+        else if (musicRow == 1) Music::setEnabled(!Music::enabled);
+        else Music::setVolume(constrain((int)Music::volume + 5, 0, 100));
+        changed = true;
+      }
+      if (valueUp || valueDown) {
+        if (musicRow == 0) Music::selectSong((int)Music::selectedSong + (valueUp ? -1 : 1));
+        else if (musicRow == 1) Music::setEnabled(valueUp);
+        else Music::setVolume(constrain((int)Music::volume + (valueUp ? 5 : -5), 0, 100));
+        changed = true;
+      }
+      if (changed) drawMusicScreen();
+      if (leftButtonPressed()) enterMenu();
+    }
   }
   delay(2);
 }

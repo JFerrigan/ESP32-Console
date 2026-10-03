@@ -218,8 +218,6 @@ struct GameState {
   bool controlsArmed;
   bool terminalReleased;
   bool musicWasEnabled;
-  bool musicRestartedForExit;
-  uint32_t bothHeldSince;
   uint8_t area;
   char message[24];
   uint32_t messageUntil;
@@ -227,8 +225,6 @@ struct GameState {
 };
 
 static GameState g;
-static bool musicWasEnabledSession = false;
-static bool musicRestartedForExit = false;
 
 // -----------------------------------------------------------------------------
 // Authored campaign data
@@ -429,13 +425,14 @@ static ToneState tone1{BUZZER_1_PIN, 0, 0, false};
 static ToneState tone2{BUZZER_2_PIN, 0, 0, false};
 
 static void startTone(ToneState &t, uint16_t hz, uint16_t ms) {
+  if (!Music::gameEffectsAllowed()) { t.active = false; return; }
   t.freq = hz;
   t.until = g.simNow + ms;
   t.active = true;
   ledcWriteTone(t.pin, hz);
 }
 static void stopTone(ToneState &t) {
-  if (t.active) ledcWriteTone(t.pin, 0);
+  if (t.active && Music::gameEffectsAllowed()) ledcWriteTone(t.pin, 0);
   t.active = false;
 }
 static void updateAudio() {
@@ -2198,13 +2195,7 @@ void enter() {
   display.setRotation(0);
   display.fillScreen(ST77XX_BLACK);
 
-  // Tank needs both buzzers for short combat cues. Pause launcher music while the
-  // game is active. The exit chord handler below resumes it just before launcher exit.
-  musicWasEnabledSession = Music::enabled;
-  if (musicWasEnabledSession) Music::stopMusic();
-
   startNewRun();
-  musicRestartedForExit = false;
   g.accumulatorUs = 0;
   render();
 }
@@ -2215,25 +2206,6 @@ void update(const GameInput &input) {
   g.lastOuterUs = nowUs;
   if (deltaUs > 120000u) deltaUs = 120000u;
   g.accumulatorUs += deltaUs;
-
-  // Cooperate with launcher's 700 ms both-button exit gesture and restore music
-  // before the launcher actually switches screens.
-  if (input.leftButton && input.rightButton) {
-    if (!g.bothHeldSince) g.bothHeldSince = millis();
-    if (!musicRestartedForExit && elapsedMs(millis(), g.bothHeldSince) >= 620) {
-      stopGameAudio();
-      if (musicWasEnabledSession) Music::startMusic();
-      musicRestartedForExit = true;
-    }
-  } else {
-    g.bothHeldSince = 0;
-    if (musicRestartedForExit) {
-      // The user released before the launcher's 700 ms exit threshold.
-      // Return audio ownership to Tank until a real exit is attempted again.
-      if (musicWasEnabledSession) Music::stopMusic();
-      musicRestartedForExit = false;
-    }
-  }
 
   uint8_t steps = 0;
   while (g.accumulatorUs >= FIXED_US && steps < MAX_CATCHUP) {

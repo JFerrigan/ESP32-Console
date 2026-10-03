@@ -7,6 +7,7 @@
 #include <string.h>
 #include "GameAPI.h"
 #include "Hardware.h"
+#include "MusicPlayer.h"
 
 namespace Pong {
 
@@ -470,6 +471,7 @@ int8_t singlePlayerDirection() {
 // ============================================================
 
 void startSfx(uint8_t pin, uint16_t frequency, uint16_t durationMs) {
+  if (!Music::gameEffectsAllowed()) return;
   if (sfx.active && sfx.pin != pin) ledcWriteTone(sfx.pin, 0);
   sfx.active = true;
   sfx.pin = pin;
@@ -479,6 +481,7 @@ void startSfx(uint8_t pin, uint16_t frequency, uint16_t durationMs) {
 }
 
 void updateSfx() {
+  if (!Music::gameEffectsAllowed()) { sfx.active = false; return; }
   if (!sfx.active) return;
   uint32_t now = millis();
   if ((int32_t)(now - sfx.untilMs) >= 0) {

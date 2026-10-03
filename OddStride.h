@@ -11,6 +11,7 @@
 #include <new>
 #include "GameAPI.h"
 #include "Hardware.h"
+#include "MusicPlayer.h"
 
 #ifndef GAME_API_LIFECYCLE_VERSION
 #error "Odd Stride requires the lifecycle-enabled GameAPI.h included with its install package."
@@ -404,10 +405,11 @@ static SwitchState readRawSwitch(uint8_t upPin,uint8_t downPin){
 static void blitTile(int16_t x,int16_t y,uint16_t* rgb){ display.drawRGBBitmap(x,y,rgb,16,16); }
 static void setBuzzer(uint8_t voice,uint16_t hz){
 #if ODD_STRIDE_ENABLE_SFX
+  if (!Music::gameEffectsAllowed()) return;
   if(voice>=2)return;
   uint8_t pin=voice==0?BUZZER_2_PIN:BUZZER_1_PIN;
   uint8_t vol=gameAudioVolume(); if(vol>100)vol=100;
-  if(hz){ ledcWriteTone(pin,hz); ledcWrite(pin,(uint32_t)511u*vol/100u); }
+  if(hz){ ledcWriteTone(pin,hz); ledcWrite(pin,Music::dutyForVolume(vol)); }
   else { ledcWriteTone(pin,0); ledcWrite(pin,0); }
 #else
   (void)voice; (void)hz;

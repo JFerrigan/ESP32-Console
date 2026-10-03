@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <math.h>
 #include <ctype.h>
+#include "ArcadeSongs.h"
 
 namespace Music {
 
@@ -19,7 +20,7 @@ namespace Music {
 // RH / Treble -> GPIO 22
 // LH / Bass   -> GPIO 21
 //
-// Paste ABC notation into ABC_SONG.
+// The selectable ABC songs are in ArcadeSongs.h.
 // ============================================================
 
 
@@ -49,15 +50,22 @@ namespace Music {
 // ============================================================
 
 const bool LOOP_SONG = true;
-bool enabled = false;
+bool enabled = true;
+bool manualSongOverride = false;
+bool gameMusicOwnsBuzzers = false;
+bool playbackAllowed = false;
+bool gameEffectsAllowed() { return enabled && !gameMusicOwnsBuzzers; }
 uint8_t volume = 50;
 uint32_t currentRhHz = 0, currentLhHz = 0;
+uint32_t dutyForVolume(uint8_t percent) {
+  const uint32_t level = percent > 100 ? 100 : percent;
+  return (511u * level * level + 5000u) / 10000u;
+}
 void applyVolume(uint8_t pin) {
   uint32_t hz = pin == BUZZER_RH_PIN ? currentRhHz : currentLhHz;
   // ledcWriteTone() sets a 10-bit PWM timer and a 511/1023 half-duty tone.
-  // The old 12-bit calculation wrote up to 2048 after that reset, producing
-  // silence or tiny chirps instead of the note.
-  const uint32_t duty = hz && enabled ? (uint32_t)511 * volume / 100 : 0;
+  // A curved duty ramp makes the lower volume steps noticeably quieter.
+  const uint32_t duty = hz && enabled ? dutyForVolume(volume) : 0;
   ledcWrite(pin, duty);
 }
 
@@ -110,7 +118,9 @@ struct VoicePlayer {
 // EVENT STORAGE
 // ============================================================
 
-const int MAX_EVENTS = 600;
+// The largest bundled song currently uses 100 events in one voice. Keep room
+// for longer arrangements without reserving unused DRAM for every game.
+const int MAX_EVENTS = 160;
 
 NoteEvent rhEvents[MAX_EVENTS];
 NoteEvent lhEvents[MAX_EVENTS];
@@ -148,47 +158,8 @@ int keyAccidental[7] = {
 
 bool waitingToRestart = false;
 uint32_t restartTime = 0;
-
-
-// ============================================================
-// YOUR ABC SONG
-// ============================================================
-
-const char *ABC_SONG = R"ABC(
-X:1
-T:Nocturne in D Minor
-C:Original
-M:3/4
-L:1/8
-Q:1/4=76
-K:Dm
-%%score { RH LH }
-
-V:RH clef=treble name="Treble"
-V:LH clef=bass name="Bass"
-
-[V:RH]
-A2 d2 f2 | e2 d2 c2 | A2 ^c2 e2 | d4 A2 |
-f2 a2 g2 | f2 e2 d2 | c2 e2 g2 | f4 e2 |
-d2 f2 a2 | c'2 a2 f2 | e2 g2 b2 | a4 g2 |
-f2 e2 d2 | ^c2 e2 A2 | d2 f2 e2 | d6 |
-
-A2 d2 f2 | a2 g2 f2 | e2 c2 A2 | G4 A2 |
-B2 d2 g2 | f2 e2 d2 | ^c2 A2 e2 | d4 A2 |
-d2 e2 f2 | g2 a2 b2 | a2 f2 d2 | c'4 a2 |
-g2 e2 c2 | A2 ^c2 e2 | f2 e2 ^c2 | d6 |]
-
-[V:LH]
-D,2 A,2 D2 | C,2 G,2 C2 | A,,2 E,2 A,2 | D,2 A,2 D2 |
-D,2 A,2 D2 | B,,2 F,2 B,2 | C,2 G,2 C2 | F,2 C2 A2 |
-D,2 A,2 D2 | F,2 C2 F2 | E,2 B,2 E2 | A,,2 E,2 A,2 |
-D,2 A,2 D2 | A,,2 E,2 A,2 | D,2 A,2 A2 | D,6 |
-
-D,2 A,2 D2 | F,2 C2 F2 | C,2 G,2 C2 | G,,2 D,2 G,2 |
-G,2 D2 G2 | B,,2 F,2 B,2 | A,,2 E,2 A,2 | D,2 A,2 D2 |
-D,2 A,2 D2 | G,2 D2 G2 | F,2 C2 F2 | F,2 C2 F2 |
-C,2 G,2 C2 | A,,2 E,2 A,2 | A,,2 E,2 A,2 | D,6 |]
-)ABC";
+uint8_t selectedSong = 0;
+const SongDef &currentSong() { return SONGS[selectedSong]; }
 
 
 // ============================================================
@@ -1324,6 +1295,11 @@ int parseVoice(
 
 void parseABC(const char *abc) {
 
+  tempoBPM = 120.0;
+  defaultLengthNum = 1;
+  defaultLengthDen = 8;
+  clearKeySignature();
+
   String source = String(abc);
 
   String rhBody = "";
@@ -1871,6 +1847,12 @@ void updateMusic() {
 void enter() {
 
   Serial.begin(115200);
+  enabled = true;
+  manualSongOverride = false;
+  gameMusicOwnsBuzzers = false;
+  playbackAllowed = false;
+  selectedSong = SONG_NOCTURNE;
+  volume = 50;
 
   delay(300);
 
@@ -1946,7 +1928,7 @@ void enter() {
   // ----------------------------------------------------------
 
   parseABC(
-    ABC_SONG
+    currentSong().abc
   );
 
 
@@ -2015,6 +1997,19 @@ void enter() {
   stopMusic();
 }
 
+void selectSong(int index, bool userChosen = true) {
+  const int count = SONG_COUNT;
+  index = (index % count + count) % count;
+  if (userChosen) manualSongOverride = true;
+  if (index == selectedSong) return;
+  stopMusic();
+  selectedSong = static_cast<uint8_t>(index);
+  parseABC(currentSong().abc);
+  rhPlayer.count = rhEventCount;
+  lhPlayer.count = lhEventCount;
+  if (enabled && playbackAllowed) startMusic();
+}
+
 
 // ============================================================
 // LOOP
@@ -2033,7 +2028,12 @@ void tick() {
   // updateGame();
   // drawScreen();
 }
-void setEnabled(bool value) { if (enabled == value) return; enabled = value; if (enabled) startMusic(); else stopMusic(); }
+void setEnabled(bool value) {
+  if (enabled == value) return;
+  enabled = value;
+  if (enabled && playbackAllowed) startMusic();
+  else stopMusic();
+}
 void setVolume(uint8_t value) { volume = value; applyVolume(BUZZER_RH_PIN); applyVolume(BUZZER_LH_PIN); }
 
 }

@@ -4,6 +4,7 @@
 #include <Adafruit_ST7789.h>
 #include "GameAPI.h"
 #include "Hardware.h"
+#include "MusicPlayer.h"
 
 // The launcher music system also owns the buzzers. Leave game SFX disabled by
 // default so this game cannot fight background music. Set to 1 if you want the
@@ -316,6 +317,7 @@ static uint8_t yToDepthBand(int16_t y) {
 
 static void queueTone(uint8_t pin, uint16_t frequency, uint16_t durationMs) {
 #if FISHING_TRAWLER_AUDIO
+  if (!Music::gameEffectsAllowed()) return;
   uint8_t slot = (pin == BUZZER_2_PIN) ? 0 : 1;
   tones[slot].active = true;
   tones[slot].pin = pin;
@@ -328,6 +330,7 @@ static void queueTone(uint8_t pin, uint16_t frequency, uint16_t durationMs) {
 
 static void updateAudio(uint32_t now) {
 #if FISHING_TRAWLER_AUDIO
+  if (!Music::gameEffectsAllowed()) { tones[0].active = tones[1].active = false; return; }
   for (uint8_t i = 0; i < 2; ++i) {
     if (tones[i].active && (int32_t)(now - tones[i].endAt) >= 0) {
       ledcWriteTone(tones[i].pin, 0);
@@ -341,8 +344,10 @@ static void updateAudio(uint32_t now) {
 
 static void stopAudio() {
 #if FISHING_TRAWLER_AUDIO
-  ledcWriteTone(BUZZER_1_PIN, 0);
-  ledcWriteTone(BUZZER_2_PIN, 0);
+  if (Music::gameEffectsAllowed()) {
+    ledcWriteTone(BUZZER_1_PIN, 0);
+    ledcWriteTone(BUZZER_2_PIN, 0);
+  }
 #endif
   tones[0].active = false;
   tones[1].active = false;

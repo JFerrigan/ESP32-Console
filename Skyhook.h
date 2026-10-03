@@ -5,8 +5,10 @@
 #include <Adafruit_ST7789.h>
 #include <esp_system.h>
 #include <math.h>
+#include <new>
 #include <string.h>
 #include "GameAPI.h"
+#include "GameRenderMemory.h"
 #include "Hardware.h"
 #include "MusicPlayer.h"
 
@@ -428,13 +430,23 @@ struct GameState {
   uint16_t contactHighWater;
 };
 
-static GameState g;
+// The launcher runs one game at a time. Skyhook reuses the render arena that
+// Tank, Deep Vector, and Space Evaders use during their own turns.
+struct SharedStorage {
+  GameState state;
+  uint16_t strip[SCREEN_W * BAND_H];
+};
+static_assert(sizeof(SharedStorage) <= GameRenderMemory::CAPACITY,
+              "Skyhook state and strip exceed shared memory");
+static_assert(alignof(SharedStorage) <= 8,
+              "Skyhook shared memory needs stronger alignment");
+static SharedStorage& shared = *new (GameRenderMemory::bytes) SharedStorage;
+static GameState& g = shared.state;
+static uint16_t (&stripPixels)[SCREEN_W * BAND_H] = shared.strip;
 
 // ============================================================
 // Strip compositor surface
 // ============================================================
-
-static uint16_t stripPixels[SCREEN_W * BAND_H];
 static uint32_t tileHashes[BAND_COUNT][TILE_COLS];
 static bool tileValid[BAND_COUNT][TILE_COLS];
 
@@ -1360,13 +1372,13 @@ const ToneNote* soundPattern(SoundId id,uint8_t& count) {
 }
 
 void setOwnedTone(uint16_t hz) {
-  if(Music::enabled)return; if(hz==0||Music::volume==0){ledcWriteTone(BUZZER_1_PIN,0);ledcWrite(BUZZER_1_PIN,0);g.ownedToneActive=false;return;}
-  ledcWriteTone(BUZZER_1_PIN,hz); uint32_t duty=(uint32_t)511*Music::volume/100; ledcWrite(BUZZER_1_PIN,duty);g.ownedToneActive=true;
+  if(!Music::gameEffectsAllowed())return; if(hz==0||Music::volume==0){ledcWriteTone(BUZZER_1_PIN,0);ledcWrite(BUZZER_1_PIN,0);g.ownedToneActive=false;return;}
+  ledcWriteTone(BUZZER_1_PIN,hz); uint32_t duty=Music::dutyForVolume(Music::volume); ledcWrite(BUZZER_1_PIN,duty);g.ownedToneActive=true;
 }
-void stopOwnedSound(){if(g.ownedToneActive&&!Music::enabled){ledcWriteTone(BUZZER_1_PIN,0);ledcWrite(BUZZER_1_PIN,0);}g.ownedToneActive=false;g.soundPlaying=SND_NONE;g.soundCount=0;g.soundHead=g.soundTail=0;}
-void queueSound(SoundId id){if(id==SND_NONE||Music::enabled)return;if(g.soundCount>=MAX_SOUNDS)return;g.soundQueue[g.soundTail]={id};g.soundTail=(g.soundTail+1)%MAX_SOUNDS;g.soundCount++;}
+void stopOwnedSound(){if(g.ownedToneActive&&Music::gameEffectsAllowed()){ledcWriteTone(BUZZER_1_PIN,0);ledcWrite(BUZZER_1_PIN,0);}g.ownedToneActive=false;g.soundPlaying=SND_NONE;g.soundCount=0;g.soundHead=g.soundTail=0;}
+void queueSound(SoundId id){if(id==SND_NONE||!Music::gameEffectsAllowed())return;if(g.soundCount>=MAX_SOUNDS)return;g.soundQueue[g.soundTail]={id};g.soundTail=(g.soundTail+1)%MAX_SOUNDS;g.soundCount++;}
 void tickSound(uint32_t nowMs) {
-  if(Music::enabled){if(g.ownedToneActive)stopOwnedSound();return;}
+  if(!Music::gameEffectsAllowed()){if(g.ownedToneActive)stopOwnedSound();return;}
   if(g.soundPlaying!=SND_NONE && (int32_t)(nowMs-g.soundNoteEndsAt)>=0){uint8_t count;const ToneNote* p=soundPattern(g.soundPlaying,count);g.soundNote++;if(g.soundNote>=count){setOwnedTone(0);g.soundPlaying=SND_NONE;}else{setOwnedTone(p[g.soundNote].hz);g.soundNoteEndsAt=nowMs+p[g.soundNote].ms;}}
   if(g.soundPlaying==SND_NONE&&g.soundCount){SoundId id=g.soundQueue[g.soundHead].id;g.soundHead=(g.soundHead+1)%MAX_SOUNDS;g.soundCount--;uint8_t count;const ToneNote* p=soundPattern(id,count);if(count){g.soundPlaying=id;g.soundNote=0;setOwnedTone(p[0].hz);g.soundNoteEndsAt=nowMs+p[0].ms;}}
 }
@@ -1404,11 +1416,12 @@ void advanceContract() {
 }
 
 void enter() {
+  new (&shared) SharedStorage;
   memset(&g,0,sizeof(g));
   ::display.setRotation(0); ::display.setTextWrap(false); ::display.setTextSize(1); ::display.setTextColor(C_WHITE);
   uint32_t nowMs=millis(); initSwitchFilter(g.leftSwitch,readLocalSwitch(LEFT_UP_PIN,LEFT_DOWN_PIN),nowMs);initSwitchFilter(g.rightSwitch,readLocalSwitch(RIGHT_UP_PIN,RIGHT_DOWN_PIN),nowMs);initButtonFilter(g.leftButton,false,nowMs);initButtonFilter(g.rightButton,false,nowMs);
   g.runSeed=hash32(esp_random() ^ micros() ^ 0x534B5948u); g.runMoney=0;g.completedContractIndex=0;g.soundPlaying=SND_NONE;g.lastPresentMs=0;
-  if(!Music::enabled){ledcWriteTone(BUZZER_1_PIN,0);ledcWrite(BUZZER_1_PIN,0);} invalidatePresentation();
+  if(Music::gameEffectsAllowed()){ledcWriteTone(BUZZER_1_PIN,0);ledcWrite(BUZZER_1_PIN,0);} invalidatePresentation();
   beginContract(hash32(g.runSeed^1u),1,true,false);
 }
 

@@ -661,16 +661,7 @@ static const char* sizeClassLabel(SizeClass c) {
 }
 
 static uint32_t roundPayout(float dollars) {
-  if (dollars < 5.0f) return 5u;
-  if (dollars > 50000.0f) return 50000u;
-  float step = 1.0f;
-  if (dollars >= 10000.0f) step = 100.0f;
-  else if (dollars >= 1000.0f) step = 25.0f;
-  else if (dollars >= 100.0f) step = 5.0f;
-  uint32_t v = (uint32_t)(roundf(dollars / step) * step);
-  if (v < 5u) v = 5u;
-  if (v > 50000u) v = 50000u;
-  return v;
+  return (uint32_t)roundf(dollars);
 }
 
 static ValueInfo calculateValue(const SpeciesDef& s, uint16_t lenTenths, SizeClass cls) {
@@ -678,8 +669,7 @@ static ValueInfo calculateValue(const SpeciesDef& s, uint16_t lenTenths, SizeCla
 
   // A typical specimen pays exactly the species' authored base value. Size
   // matters strongly (area/mass-ish 2.2 exponent), while Trophy/Monster fish
-  // retain their extra 20%/40% prestige bonus. The final arcade economy is
-  // intentionally bounded to $5..$50,000.
+  // retain their extra 20%/40% prestige bonus.
   float rawBase = s.baseValueDollars * powf(ratio, 2.2f);
   uint32_t base = roundPayout(rawBase);
   uint8_t bonus = bonusPercent(cls);
@@ -992,7 +982,7 @@ static const SfxStep SFX_MONSTER[] = {{800,1000,55},{1050,1250,55},{1300,1500,55
 static const SfxStep SFX_EMPTY[] = {{350,350,70},{220,220,70}};
 
 static bool audioAllowed() {
-  return !Music::enabled && (int)Music::volume > 0 && !g.sfx.suppressedForExit;
+  return Music::gameEffectsAllowed() && (int)Music::volume > 0 && !g.sfx.suppressedForExit;
 }
 
 static void writeBuzzerPin(uint8_t pin, uint16_t hz) {
@@ -1002,13 +992,15 @@ static void writeBuzzerPin(uint8_t pin, uint16_t hz) {
   }
   ledcWriteTone(pin, hz);
   int volume = (int)Music::volume; if (volume < 0) volume = 0; if (volume > 100) volume = 100;
-  uint32_t duty = (uint32_t)volume * 512u / 100u;
+  uint32_t duty = Music::dutyForVolume((uint8_t)volume);
   if (duty > 0) ledcWrite(pin, duty);
 }
 
 static void stopOwnedSfx() {
-  if (g.sfx.ownsLeft) ledcWriteTone(BUZZER_2_PIN, 0);
-  if (g.sfx.ownsRight) ledcWriteTone(BUZZER_1_PIN, 0);
+  if (Music::gameEffectsAllowed()) {
+    if (g.sfx.ownsLeft) ledcWriteTone(BUZZER_2_PIN, 0);
+    if (g.sfx.ownsRight) ledcWriteTone(BUZZER_1_PIN, 0);
+  }
   g.sfx.active = false;
   g.sfx.ownsLeft = g.sfx.ownsRight = false;
   g.sfx.pattern = nullptr;
