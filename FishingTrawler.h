@@ -936,54 +936,69 @@ static void drawPlayerTarget(uint8_t playerIndex) {
 }
 
 static int16_t netOpenHalfWidth(const PlayerState &p, uint32_t now) {
-  if (p.secured || state == STATE_TRANSITION) return 5;
-  if (!p.castActive) return 15;
-  if (!p.castDurationMs) return 15;
+  if (p.secured || state == STATE_TRANSITION) return 4;
+  if (!p.castActive) return 16;
+  if (!p.castDurationMs) return 16;
 
   uint32_t elapsed = now - p.castStartedAt;
   if (elapsed > p.castDurationMs) elapsed = p.castDurationMs;
 
-  // The mouth begins tucked beneath the cable, then spreads as the weighted
-  // bag sinks.  It reaches full capture width for the final third of the drop.
+  // This is a lift/drop net rather than a hanging sack: the lower rim is the
+  // broad catching opening.  It starts folded beneath the bridle and flares
+  // outward as the weights pull the corners apart during the descent.
   const uint32_t openMs = (p.castDurationMs * 2U) / 3U;
-  if (elapsed >= openMs || openMs == 0U) return 17;
-  return (int16_t)(7 + (10L * (int32_t)elapsed) / (int32_t)openMs);
+  if (elapsed >= openMs || openMs == 0U) return NET_CAPTURE_HALF_WIDTH;
+  return (int16_t)(6 + ((NET_CAPTURE_HALF_WIDTH - 6L) * (int32_t)elapsed) /
+                         (int32_t)openMs);
 }
 
 static void drawNetShape(int16_t x, int16_t y, uint16_t color,
-                         int16_t mouthHalf, bool closed) {
-  const int16_t mouthY = y - 7;
+                         int16_t openingHalf, bool closed) {
   const int16_t bridleY = y - 12;
-  const int16_t bottomY = y + 10;
-  const int16_t bottomHalf = closed ? 2 : 5;
+  const int16_t shoulderY = y - 6;
+  const int16_t bottomY = y + 9;
+  const int16_t shoulderHalf = closed ? 3 : clamp16((int16_t)(openingHalf / 2), 4, 9);
+  const int16_t bottomHalf = closed ? 3 : openingHalf;
 
-  // Bridle: cable load splits into the two sides of the basket mouth.
-  display.drawLine(x, bridleY, x - mouthHalf, mouthY, color);
-  display.drawLine(x, bridleY, x + mouthHalf, mouthY, color);
+  // Cable -> short bridle -> narrow upper shoulders.  Keeping the top compact
+  // makes the lower flare read clearly as the actual catching opening.
+  display.drawLine(x, bridleY, x - shoulderHalf, shoulderY, color);
+  display.drawLine(x, bridleY, x + shoulderHalf, shoulderY, color);
+  display.drawFastHLine(x - shoulderHalf, shoulderY,
+                        shoulderHalf * 2 + 1, color);
 
-  // Heavy top rim gives the opening a readable silhouette against moving fish.
-  display.drawFastHLine(x - mouthHalf, mouthY, mouthHalf * 2 + 1, color);
-  display.drawFastHLine(x - mouthHalf + 2, mouthY + 1, mouthHalf * 2 - 3, color);
-
-  // Tapered hanging bag.
-  display.drawLine(x - mouthHalf, mouthY, x - bottomHalf, bottomY, color);
-  display.drawLine(x + mouthHalf, mouthY, x + bottomHalf, bottomY, color);
-  display.drawFastHLine(x - bottomHalf, bottomY, bottomHalf * 2 + 1, color);
+  // The mesh flares OUTWARD toward the bottom.  This is the key silhouette:
+  // narrow at the suspension point, broad at the weighted lower rim.
+  display.drawLine(x - shoulderHalf, shoulderY, x - bottomHalf, bottomY, color);
+  display.drawLine(x + shoulderHalf, shoulderY, x + bottomHalf, bottomY, color);
 
   if (closed) {
-    // A caught net cinches into a narrow, unmistakable bundle.
-    display.drawLine(x - mouthHalf, mouthY + 1, x + bottomHalf, bottomY - 1, color);
-    display.drawLine(x + mouthHalf, mouthY + 1, x - bottomHalf, bottomY - 1, color);
+    // On a catch the lower opening cinches into a compact bundle before haul-up.
+    display.drawLine(x - shoulderHalf, shoulderY + 1, x + bottomHalf, bottomY - 1, color);
+    display.drawLine(x + shoulderHalf, shoulderY + 1, x - bottomHalf, bottomY - 1, color);
     display.fillCircle(x, bottomY, 2, color);
   } else {
-    // Sparse mesh keeps the basket legible without becoming a solid block.
-    display.drawLine(x - mouthHalf / 2, mouthY + 1, x - 2, bottomY - 1, color);
-    display.drawLine(x + mouthHalf / 2, mouthY + 1, x + 2, bottomY - 1, color);
-    display.drawLine(x - mouthHalf + 3, mouthY + 4, x + bottomHalf, bottomY - 2, color);
-    display.drawLine(x + mouthHalf - 3, mouthY + 4, x - bottomHalf, bottomY - 2, color);
-    display.drawFastHLine(x - 7, y + 2, 15, color);
+    // Broad double lower rim: visually the heaviest part of the net and the
+    // part the player should read as passing around the target fish.
+    display.drawFastHLine(x - bottomHalf, bottomY, bottomHalf * 2 + 1, color);
+    if (bottomHalf >= 10) {
+      display.drawFastHLine(x - bottomHalf + 2, bottomY - 1,
+                            bottomHalf * 2 - 3, color);
+    }
 
-    // Small bottom weights sell the sense that the net is being pulled downward.
+    // Sparse converging mesh gives depth without filling the water with pixels.
+    display.drawLine(x - shoulderHalf + 2, shoulderY + 2,
+                     x - bottomHalf / 2, bottomY - 2, color);
+    display.drawLine(x + shoulderHalf - 2, shoulderY + 2,
+                     x + bottomHalf / 2, bottomY - 2, color);
+    display.drawLine(x - shoulderHalf, shoulderY + 3,
+                     x + bottomHalf - 3, bottomY - 2, color);
+    display.drawLine(x + shoulderHalf, shoulderY + 3,
+                     x - bottomHalf + 3, bottomY - 2, color);
+    display.drawFastHLine(x - clamp16((int16_t)(bottomHalf - 5), 3, 13), y + 3,
+                          clamp16((int16_t)((bottomHalf - 5) * 2 + 1), 7, 27), color);
+
+    // Corner weights explain why the lower rim stays spread underwater.
     display.fillCircle(x - bottomHalf, bottomY + 1, 1, color);
     display.fillCircle(x + bottomHalf, bottomY + 1, 1, color);
   }
@@ -1010,7 +1025,9 @@ static void drawNet(uint8_t playerIndex, uint32_t now) {
   if (p.hasMissMessage && (int32_t)(p.feedbackUntil - now) > 0) {
     display.setTextSize(1);
     display.setTextColor(C_WARNING);
-    display.setCursor(x - 12, clamp16((int16_t)(p.netY + 15), WATER_TOP + 4, 306));
+    // Keep the miss callout pinned to the failed target depth.  The net can
+    // retract independently without painting a trail of repeated MISS labels.
+    display.setCursor(x - 12, clamp16((int16_t)(p.castTargetY + 15), WATER_TOP + 4, 306));
     display.print("MISS");
   }
 }
@@ -1549,8 +1566,10 @@ static void collectDynamicDamage(uint32_t now) {
 
     if (prevNetBodyY[p] != currentBodyY || prevNetClosed[p] != currentClosed ||
         prevNetMouthHalf[p] != currentMouthHalf) {
-      // Covers the widest opening, bridle, mesh bag, and bottom weights.
-      addFishDirty({(int16_t)(x - 20), (int16_t)(prevNetBodyY[p] - 14), 41, 28});
+      // Covers the widest lower opening, bridle, mesh, and corner weights.
+      addFishDirty({(int16_t)(x - NET_CAPTURE_HALF_WIDTH - 3),
+                    (int16_t)(prevNetBodyY[p] - 14),
+                    (int16_t)(NET_CAPTURE_HALF_WIDTH * 2 + 7), 30});
     }
 
     if (prevNetEndY[p] > currentEndY) {
@@ -1559,8 +1578,9 @@ static void collectDynamicDamage(uint32_t now) {
     }
 
     if (prevMissVisible[p] && !currentMiss) {
+      // MISS is anchored at castTargetY, not at the moving net body.
       addFishDirty({(int16_t)(x - 14),
-                    clamp16((int16_t)(prevNetBodyY[p] + 12), WATER_TOP, 305),
+                    clamp16((int16_t)(players[p].castTargetY + 12), WATER_TOP, 305),
                     31, 12});
     }
   }
