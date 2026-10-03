@@ -130,7 +130,6 @@ static constexpr uint8_t INITIAL_FISH_COUNT = 14;
 static constexpr uint8_t TARGET_FISH_COUNT = 14;
 
 static constexpr uint32_t ROUND_LENGTH_MS = 60000;
-static constexpr uint32_t READY_MS = 700;
 static constexpr uint32_t CAST_MIN_MS = 450;
 static constexpr uint32_t CAST_MAX_MS = 950;
 static constexpr uint32_t MISS_FEEDBACK_MS = 450;
@@ -216,6 +215,10 @@ static uint32_t winnerAnimAt = 0;
 static uint8_t revealIndex = 0;
 static uint8_t lastWarningSecond = 255;
 static bool screenDirty = true;
+// The opening title card must observe a full button release before a new press
+// can start the round. This prevents the launcher/menu press used to enter the
+// game from leaking through as either the start press or an immediate cast.
+static bool startInputArmed = false;
 static bool replayReady[2] = {false, false};
 static Fish prevFish[MAX_ACTIVE_FISH];
 static PlayerState prevPlayers[2];
@@ -739,6 +742,7 @@ static void resetRound(uint32_t now) {
   for (uint8_t i = 0; i < MAX_ACTIVE_FISH; ++i) fish[i].active = false;
   replayReady[0] = false;
   replayReady[1] = false;
+  startInputArmed = false;
   revealIndex = 0;
   revealBeatStartedAt = 0;
   lastWarningSecond = 255;
@@ -1693,6 +1697,15 @@ static void drawReadyFrame() {
 
   display.drawFastHLine(38, 24, 162, rgb565(56, 123, 145));
   display.drawFastHLine(44, 86, 150, rgb565(56, 123, 145));
+
+  // Persistent start prompt. The game remains on this card until a clean
+  // release-then-press sequence is observed in update().
+  display.fillRect(27, 268, 186, 32, C_PANEL);
+  display.drawRect(27, 268, 186, 32, C_WARNING);
+  display.setTextSize(2);
+  display.setTextColor(ST77XX_WHITE);
+  display.setCursor(36, 277);
+  display.print("Press to Start");
 }
 
 static uint32_t runningRevealTotal(const PlayerState &p, uint8_t throughIndex) {
@@ -2060,9 +2073,26 @@ static void update(const GameInput &input) {
   if (dtMs > 50U) dtMs = 50U;
 
   switch (state) {
-    case STATE_READY:
-      if ((uint32_t)(now - stateStartedAt) >= READY_MS) beginFishing(now);
+    case STATE_READY: {
+      const bool anyButtonHeld = input.leftButton || input.rightButton;
+
+      // First require every button to be released. This is especially important
+      // when the player enters while still holding the launcher selection button.
+      if (!startInputArmed) {
+        if (!anyButtonHeld) startInputArmed = true;
+        break;
+      }
+
+      // Start only from a fresh single-button press. A simultaneous two-button
+      // chord is deliberately left alone so the launcher's hold-both menu
+      // shortcut remains available. Because this state does not fall through to
+      // STATE_FISHING, the start press is consumed and cannot also cast a net.
+      const bool bothHeld = input.leftButton && input.rightButton;
+      if (!bothHeld && (input.leftPressed || input.rightPressed)) {
+        beginFishing(now);
+      }
       break;
+    }
 
     case STATE_FISHING:
       updateFishing(input, now, dtMs);
