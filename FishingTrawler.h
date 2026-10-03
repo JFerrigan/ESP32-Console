@@ -30,6 +30,11 @@ enum GameState : uint8_t {
   STATE_REPLAY_WAIT
 };
 
+enum PlayMode : uint8_t {
+  MODE_SINGLE_PLAYER = 1,
+  MODE_TWO_PLAYER = 2
+};
+
 enum Species : uint8_t {
   BLUEGILL,
   YELLOW_PERCH,
@@ -154,6 +159,7 @@ static constexpr int16_t NET_CAPTURE_HALF_WIDTH = 18;
 static constexpr int16_t NET_CAPTURE_HALF_HEIGHT = 10;
 static constexpr int16_t P1_NET_X = 58;
 static constexpr int16_t P2_NET_X = 182;
+static constexpr int16_t SINGLE_NET_X = SCREEN_W / 2;
 static constexpr int16_t DEPTH_SPEED_PX_PER_SEC = 86;
 
 static constexpr uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
@@ -200,6 +206,7 @@ static const SpeciesDef SPECIES[SPECIES_COUNT] = {
 // -----------------------------------------------------------------------------
 
 static GameState state = STATE_READY;
+static PlayMode playMode = MODE_SINGLE_PLAYER;
 static PlayerState players[2];
 static Fish fish[MAX_ACTIVE_FISH];
 static ToneState tones[2];
@@ -258,6 +265,36 @@ static int16_t clamp16(int16_t v, int16_t lo, int16_t hi) {
 
 static uint16_t clampU16(uint32_t v) {
   return v > 65535UL ? 65535U : (uint16_t)v;
+}
+
+static uint8_t activePlayerCount() {
+  return playMode == MODE_SINGLE_PLAYER ? 1U : 2U;
+}
+
+static bool playerIsActive(uint8_t playerIndex) {
+  return playerIndex < activePlayerCount();
+}
+
+static int16_t playerNetX(uint8_t playerIndex) {
+  if (playMode == MODE_SINGLE_PLAYER) return SINGLE_NET_X;
+  return playerIndex == 0 ? P1_NET_X : P2_NET_X;
+}
+
+static uint16_t playerAccent(uint8_t playerIndex) {
+  if (playMode == MODE_SINGLE_PLAYER) return ST77XX_WHITE;
+  return playerIndex == 0 ? C_P1 : C_P2;
+}
+
+static uint16_t playerDimAccent(uint8_t playerIndex) {
+  if (playMode == MODE_SINGLE_PLAYER) return rgb565(128, 142, 150);
+  return playerIndex == 0 ? C_P1_DIM : C_P2_DIM;
+}
+
+static bool allActivePlayersSecured() {
+  for (uint8_t i = 0; i < activePlayerCount(); ++i) {
+    if (!players[i].secured) return false;
+  }
+  return true;
 }
 
 static int16_t randomRange(int16_t lo, int16_t hiInclusive) {
@@ -372,6 +409,35 @@ static SwitchState readSwitchState(bool playerTwo) {
   if (!up && down) return SWITCH_DOWN;
   if (!up && !down) return SWITCH_CENTER;
   return SWITCH_ERROR;
+}
+
+static SwitchState readSinglePlayerSwitchState() {
+  const SwitchState left = readSwitchState(false);
+  const SwitchState right = readSwitchState(true);
+  const bool anyUp = left == SWITCH_UP || right == SWITCH_UP;
+  const bool anyDown = left == SWITCH_DOWN || right == SWITCH_DOWN;
+
+  if (anyUp && !anyDown) return SWITCH_UP;
+  if (anyDown && !anyUp) return SWITCH_DOWN;
+  // Opposing sticks cancel. Errors are treated as neutral unless the other
+  // stick provides one unambiguous direction.
+  return SWITCH_CENTER;
+}
+
+static void updateReadyModeSelection() {
+  const SwitchState left = readSwitchState(false);
+  const SwitchState right = readSwitchState(true);
+  const bool anyUp = left == SWITCH_UP || right == SWITCH_UP;
+  const bool anyDown = left == SWITCH_DOWN || right == SWITCH_DOWN;
+
+  PlayMode next = playMode;
+  if (anyUp && !anyDown) next = MODE_SINGLE_PLAYER;
+  else if (anyDown && !anyUp) next = MODE_TWO_PLAYER;
+
+  if (next != playMode) {
+    playMode = next;
+    screenDirty = true;
+  }
 }
 
 static void updateDepth(PlayerState &p, uint8_t switchState, uint32_t dtMs) {
@@ -667,18 +733,23 @@ static void resolveCast(PlayerState &p, uint8_t playerIndex, uint32_t now,
 
 static void resolveBothCastsIfReady(uint32_t now) {
   const bool p1Ready = players[0].castActive && players[0].castResolutionPending;
-  const bool p2Ready = players[1].castActive && players[1].castResolutionPending;
+  const bool p2Ready = playerIsActive(1) &&
+                       players[1].castActive && players[1].castResolutionPending;
   if (!p1Ready && !p2Ready) return;
 
   uint8_t caughtThisResolution[2] = {0, 0};
 
-  // Build ownership from the union of both eligible nets before mutating fish.
+  // Build ownership from the union of all active eligible nets before mutating
+  // fish. In single-player there is only the centered white net, so contested
+  // ownership disappears naturally.
   for (uint8_t i = 0; i < MAX_ACTIVE_FISH; ++i) {
     Fish &f = fish[i];
     if (!f.active) continue;
 
-    const bool eligible1 = p1Ready && fishOverlapsNet(f, P1_NET_X, players[0].castTargetY);
-    const bool eligible2 = p2Ready && fishOverlapsNet(f, P2_NET_X, players[1].castTargetY);
+    const bool eligible1 = p1Ready &&
+                           fishOverlapsNet(f, playerNetX(0), players[0].castTargetY);
+    const bool eligible2 = p2Ready &&
+                           fishOverlapsNet(f, playerNetX(1), players[1].castTargetY);
     if (!eligible1 && !eligible2) continue;
 
     uint8_t owner = 0;
@@ -772,8 +843,8 @@ static void beginTimeout(uint32_t now) {
   setState(STATE_TIMEOUT, now);
 
   // Timeout cancels any ordinary cast and grants exactly one final forced cast
-  // at the player's current selected depth.
-  for (uint8_t i = 0; i < 2; ++i) {
+  // for every active player at their current selected depth.
+  for (uint8_t i = 0; i < activePlayerCount(); ++i) {
     PlayerState &p = players[i];
     if (p.secured) continue;
     p.castActive = false;
@@ -785,7 +856,7 @@ static void beginTimeout(uint32_t now) {
 }
 
 static void beginTransition(uint32_t now) {
-  for (uint8_t i = 0; i < 2; ++i) {
+  for (uint8_t i = 0; i < activePlayerCount(); ++i) {
     players[i].transitionFromY = players[i].netY;
     players[i].castActive = false;
     players[i].castResolutionPending = false;
@@ -800,6 +871,7 @@ static void beginReveal(uint32_t now) {
 }
 
 static uint8_t maxCatchCount() {
+  if (playMode == MODE_SINGLE_PLAYER) return players[0].catchCount;
   return players[0].catchCount > players[1].catchCount ?
          players[0].catchCount : players[1].catchCount;
 }
@@ -906,19 +978,17 @@ static void drawFishSilhouette(const Fish &f) {
 }
 
 static void drawPlayerTarget(uint8_t playerIndex) {
+  if (!playerIsActive(playerIndex)) return;
   const PlayerState &p = players[playerIndex];
   if (p.secured) return;
 
-  const int16_t x = playerIndex == 0 ? P1_NET_X : P2_NET_X;
-  const uint16_t accent = playerIndex == 0 ? C_P1 : C_P2;
-  const uint16_t dim = playerIndex == 0 ? C_P1_DIM : C_P2_DIM;
+  const int16_t x = playerNetX(playerIndex);
+  const uint16_t accent = playerAccent(playerIndex);
+  const uint16_t dim = playerDimAccent(playerIndex);
   const int16_t halfW = NET_CAPTURE_HALF_WIDTH;
   const int16_t halfH = NET_CAPTURE_HALF_HEIGHT;
   const int16_t arm = 6;
 
-  // Show the actual catch footprint rather than a tiny center cross.  Four
-  // bright brackets make the depth readable even when a dark fish passes over
-  // the marker, while the dim center line keeps precise vertical aiming easy.
   display.drawFastHLine(x - halfW, p.targetY - halfH, arm, accent);
   display.drawFastVLine(x - halfW, p.targetY - halfH, arm, accent);
   display.drawFastHLine(x + halfW - arm + 1, p.targetY - halfH, arm, accent);
@@ -931,8 +1001,6 @@ static void drawPlayerTarget(uint8_t playerIndex) {
   display.drawFastHLine(x - 8, p.targetY, 17, dim);
   display.drawFastVLine(x, p.targetY - 5, 11, dim);
 
-  // White center diamond is deliberately neutral so both player colors retain
-  // strong contrast in every water-depth band.
   display.drawLine(x, p.targetY - 3, x + 3, p.targetY, ST77XX_WHITE);
   display.drawLine(x + 3, p.targetY, x, p.targetY + 3, ST77XX_WHITE);
   display.drawLine(x, p.targetY + 3, x - 3, p.targetY, ST77XX_WHITE);
@@ -1009,9 +1077,10 @@ static void drawNetShape(int16_t x, int16_t y, uint16_t color,
 }
 
 static void drawNet(uint8_t playerIndex, uint32_t now) {
+  if (!playerIsActive(playerIndex)) return;
   PlayerState &p = players[playerIndex];
-  const int16_t x = playerIndex == 0 ? P1_NET_X : P2_NET_X;
-  const uint16_t color = playerIndex == 0 ? C_P1 : C_P2;
+  const int16_t x = playerNetX(playerIndex);
+  const uint16_t color = playerAccent(playerIndex);
   const bool deployed = p.castActive || p.secured ||
                         (p.hasMissMessage && (int32_t)(p.feedbackUntil - now) > 0) ||
                         state == STATE_TRANSITION;
@@ -1029,8 +1098,6 @@ static void drawNet(uint8_t playerIndex, uint32_t now) {
   if (p.hasMissMessage && (int32_t)(p.feedbackUntil - now) > 0) {
     display.setTextSize(1);
     display.setTextColor(C_WARNING);
-    // Keep the miss callout pinned to the failed target depth.  The net can
-    // retract independently without painting a trail of repeated MISS labels.
     display.setCursor(x - 12, clamp16((int16_t)(p.castTargetY + 15), WATER_TOP + 4, 306));
     display.print("MISS");
   }
@@ -1052,13 +1119,17 @@ static uint8_t playerHudStatus(uint8_t playerIndex) {
 
 static void drawHudBase() {
   display.fillRect(0, 0, SCREEN_W, WATER_TOP, C_PANEL);
-  display.drawFastVLine(119, 0, WATER_TOP, C_PANEL_2);
 
+  if (playMode == MODE_SINGLE_PLAYER) {
+    display.drawFastHLine(0, WATER_TOP - 1, SCREEN_W, C_PANEL_2);
+    return;
+  }
+
+  display.drawFastVLine(119, 0, WATER_TOP, C_PANEL_2);
   display.setTextSize(1);
   display.setTextColor(C_P1);
   display.setCursor(4, 3);
   display.print("P1");
-
   display.setTextColor(C_P2);
   display.setCursor(220, 3);
   display.print("P2");
@@ -1073,7 +1144,9 @@ static void drawTimerValue(uint32_t now, bool force) {
   shownTimerSeconds = seconds;
   shownTimerPulse = pulse;
 
-  display.fillRect(82, 3, 76, 25, C_PANEL);
+  if (playMode == MODE_SINGLE_PLAYER) display.fillRect(82, 2, 76, 19, C_PANEL);
+  else display.fillRect(82, 3, 76, 25, C_PANEL);
+
   uint16_t color = ST77XX_WHITE;
   if (seconds <= 10U && pulse) color = C_WARNING;
 
@@ -1087,46 +1160,50 @@ static void drawTimerValue(uint32_t now, bool force) {
 
   display.setTextSize(2);
   display.setTextColor(color);
-  display.setCursor(92, 8);
+  display.setCursor(92, playMode == MODE_SINGLE_PLAYER ? 3 : 8);
   display.print("0:");
   if (seconds < 10U) display.print('0');
   display.print(seconds);
 }
 
 static void drawPlayerStatusValue(uint8_t playerIndex, bool force) {
+  if (!playerIsActive(playerIndex)) return;
   const uint8_t status = playerHudStatus(playerIndex);
   if (!force && shownPlayerStatus[playerIndex] == status) return;
   shownPlayerStatus[playerIndex] = status;
 
+  if (playMode == MODE_SINGLE_PLAYER) {
+    display.fillRect(76, 21, 88, 10, C_PANEL);
+    display.setTextSize(1);
+    switch (status) {
+      case 1:
+        display.setTextColor(C_TEXT_DIM); display.setCursor(102, 22); display.print("NET..."); break;
+      case 2:
+        display.setTextColor(ST77XX_WHITE); display.setCursor(102, 22); display.print("LOCKED"); break;
+      case 3:
+        display.setTextColor(ST77XX_WHITE); display.setCursor(99, 22); display.print("$0 LOCK"); break;
+      case 4:
+        display.setTextColor(C_WARNING); display.setCursor(105, 22); display.print("FINAL"); break;
+      default:
+        display.setTextColor(C_TEXT_DIM); display.setCursor(105, 22); display.print("READY"); break;
+    }
+    return;
+  }
+
   const int16_t x = playerIndex == 0 ? 0 : 174;
   const int16_t cursorX = playerIndex == 0 ? 4 : 187;
-  const uint16_t accent = playerIndex == 0 ? C_P1 : C_P2;
+  const uint16_t accent = playerAccent(playerIndex);
 
   display.fillRect(x, 16, 66, 16, C_PANEL);
   display.setTextSize(1);
   display.setCursor(cursorX, 19);
 
   switch (status) {
-    case 1:
-      display.setTextColor(C_TEXT_DIM);
-      display.print("NET...");
-      break;
-    case 2:
-      display.setTextColor(accent);
-      display.print("LOCKED");
-      break;
-    case 3:
-      display.setTextColor(accent);
-      display.print("$0 LOCK");
-      break;
-    case 4:
-      display.setTextColor(C_WARNING);
-      display.print("FINAL");
-      break;
-    default:
-      display.setTextColor(C_TEXT_DIM);
-      display.print("READY");
-      break;
+    case 1: display.setTextColor(C_TEXT_DIM); display.print("NET..."); break;
+    case 2: display.setTextColor(accent); display.print("LOCKED"); break;
+    case 3: display.setTextColor(accent); display.print("$0 LOCK"); break;
+    case 4: display.setTextColor(C_WARNING); display.print("FINAL"); break;
+    default: display.setTextColor(C_TEXT_DIM); display.print("READY"); break;
   }
 }
 
@@ -1141,7 +1218,7 @@ static void drawFishingHud(uint32_t now, bool force) {
 
   drawTimerValue(now, force);
   drawPlayerStatusValue(0, force);
-  drawPlayerStatusValue(1, force);
+  if (playMode == MODE_TWO_PLAYER) drawPlayerStatusValue(1, force);
 }
 
 static bool rectsIntersect(int16_t ax, int16_t ay, int16_t aw, int16_t ah,
@@ -1549,10 +1626,8 @@ static void collectDynamicDamage(uint32_t now) {
     if (fish[i].active) addFishDirty(fishBounds(fish[i]));
   }
 
-  // Old target/net/miss pixels also become lake damage. They are composed with
-  // current fish in RAM, so cleaning up a net can never blank a fish beneath it.
-  for (uint8_t p = 0; p < 2; ++p) {
-    const int16_t x = p == 0 ? P1_NET_X : P2_NET_X;
+  for (uint8_t p = 0; p < activePlayerCount(); ++p) {
+    const int16_t x = playerNetX(p);
     const bool targetVisible = !players[p].secured;
     if (prevTargetVisible[p] && (!targetVisible || prevTargetY[p] != players[p].targetY)) {
       addFishDirty({(int16_t)(x - NET_CAPTURE_HALF_WIDTH - 2),
@@ -1570,7 +1645,6 @@ static void collectDynamicDamage(uint32_t now) {
 
     if (prevNetBodyY[p] != currentBodyY || prevNetClosed[p] != currentClosed ||
         prevNetMouthHalf[p] != currentMouthHalf) {
-      // Covers the widest lower opening, bridle, mesh, and corner weights.
       addFishDirty({(int16_t)(x - NET_CAPTURE_HALF_WIDTH - 3),
                     (int16_t)(prevNetBodyY[p] - 14),
                     (int16_t)(NET_CAPTURE_HALF_WIDTH * 2 + 7), 30});
@@ -1582,7 +1656,6 @@ static void collectDynamicDamage(uint32_t now) {
     }
 
     if (prevMissVisible[p] && !currentMiss) {
-      // MISS is anchored at castTargetY, not at the moving net body.
       addFishDirty({(int16_t)(x - 14),
                     clamp16((int16_t)(players[p].castTargetY + 12), WATER_TOP, 305),
                     31, 12});
@@ -1593,8 +1666,14 @@ static void collectDynamicDamage(uint32_t now) {
 static void snapshotDynamicFrame(uint32_t now) {
   for (uint8_t i = 0; i < MAX_ACTIVE_FISH; ++i) prevFish[i] = fish[i];
 
+  const uint8_t count = activePlayerCount();
   for (uint8_t p = 0; p < 2; ++p) {
     prevPlayers[p] = players[p];
+    if (p >= count) {
+      prevTargetVisible[p] = false;
+      prevMissVisible[p] = false;
+      continue;
+    }
     prevNetEndY[p] = netCableEndVisualY(players[p], now);
     prevNetBodyY[p] = netBodyVisualY(players[p], now);
     prevNetClosed[p] = players[p].secured || state == STATE_TRANSITION;
@@ -1612,10 +1691,8 @@ static void drawFishingFrameFull(uint32_t now) {
   drawLakeBackground();
   drawEnvironment();
   for (uint8_t i = 0; i < MAX_ACTIVE_FISH; ++i) drawFishSilhouette(fish[i]);
-  drawPlayerTarget(0);
-  drawPlayerTarget(1);
-  drawNet(0, now);
-  drawNet(1, now);
+  for (uint8_t p = 0; p < activePlayerCount(); ++p) drawPlayerTarget(p);
+  for (uint8_t p = 0; p < activePlayerCount(); ++p) drawNet(p, now);
   drawFishingHud(now, true);
   snapshotDynamicFrame(now);
 }
@@ -1627,17 +1704,10 @@ static void drawFishingFrame(uint32_t now) {
   }
 
   collectDynamicDamage(now);
-
-  // Every damaged lake rectangle is fully reconstructed off-screen with the
-  // *current* fish already present. The TFT receives one opaque bitmap per
-  // rectangle, so there is no visible erase-then-redraw blink.
   for (uint8_t i = 0; i < fishDirtyCount; ++i) composeFishRegion(fishDirty[i]);
 
-  // Foreground controls are tiny and drawn after the buffered lake update.
-  drawPlayerTarget(0);
-  drawPlayerTarget(1);
-  drawNet(0, now);
-  drawNet(1, now);
+  for (uint8_t p = 0; p < activePlayerCount(); ++p) drawPlayerTarget(p);
+  for (uint8_t p = 0; p < activePlayerCount(); ++p) drawNet(p, now);
   drawFishingHud(now, false);
 
   snapshotDynamicFrame(now);
@@ -1656,14 +1726,12 @@ static void drawReadyFrame() {
   display.drawFastHLine(86, 101, 58, C_WATER_LINE);
   display.drawFastHLine(175, 94, 42, C_WATER_LINE);
 
-  // Bubbles.
   display.drawCircle(33, 183, 3, C_WATER_LINE);
   display.drawCircle(41, 169, 2, C_WATER_LINE);
   display.drawCircle(197, 205, 3, C_WATER_LINE);
   display.drawCircle(204, 188, 2, C_WATER_LINE);
   display.drawCircle(160, 262, 2, C_WATER_LINE);
 
-  // Weeds and lakebed.
   display.fillRect(0, 296, SCREEN_W, 24, rgb565(16, 35, 40));
   display.fillCircle(24, 313, 14, C_ROCK);
   display.fillCircle(214, 313, 17, C_ROCK);
@@ -1674,7 +1742,6 @@ static void drawReadyFrame() {
   display.drawLine(181, 302, 173, 289, C_WEED);
   display.drawLine(182, 307, 191, 292, C_WEED);
 
-  // Decorative fish silhouettes in the background.
   Fish deco;
   deco.active = true; deco.lengthTenths = 230; deco.species = NORTHERN_PIKE; deco.vxTenths = 100;
   deco.x = 56; deco.y = 208; drawFishSilhouette(deco);
@@ -1685,7 +1752,6 @@ static void drawReadyFrame() {
   deco.lengthTenths = 350; deco.species = MUSKY; deco.vxTenths = -100;
   deco.x = 124; deco.y = 118; drawFishSilhouette(deco);
 
-  // Title text with simple glow/outline treatment.
   display.setTextSize(3);
   display.setTextColor(C_PANEL);
   display.setCursor(33, 30); display.print("Fishing");
@@ -1694,12 +1760,24 @@ static void drawReadyFrame() {
   display.setCursor(31, 28); display.print("Fishing");
   display.setTextColor(C_WARNING);
   display.setCursor(32, 56); display.print("Trawler");
-
   display.drawFastHLine(38, 24, 162, rgb565(56, 123, 145));
   display.drawFastHLine(44, 86, 150, rgb565(56, 123, 145));
 
-  // Persistent start prompt. The game remains on this card until a clean
-  // release-then-press sequence is observed in update().
+  // Mode menu. Either physical switch can select: UP = 1 player, DOWN = 2 player.
+  const bool singleSelected = playMode == MODE_SINGLE_PLAYER;
+  display.fillRect(45, 180, 150, 30, C_PANEL);
+  display.drawRect(45, 180, 150, 30, singleSelected ? C_WARNING : C_TEXT_DIM);
+  display.setTextSize(2);
+  display.setTextColor(singleSelected ? ST77XX_WHITE : C_TEXT_DIM);
+  display.setCursor(72, 187);
+  display.print("1 PLAYER");
+
+  display.fillRect(45, 215, 150, 30, C_PANEL);
+  display.drawRect(45, 215, 150, 30, singleSelected ? C_TEXT_DIM : C_WARNING);
+  display.setTextColor(singleSelected ? C_TEXT_DIM : ST77XX_WHITE);
+  display.setCursor(72, 222);
+  display.print("2 PLAYER");
+
   display.fillRect(27, 268, 186, 32, C_PANEL);
   display.drawRect(27, 268, 186, 32, C_WARNING);
   display.setTextSize(2);
@@ -1789,7 +1867,83 @@ static void drawRevealColumn(uint8_t playerIndex, uint8_t index) {
   drawCatchText(c, x0, runningRevealTotal(p, index));
 }
 
+static int16_t centeredTextX(const char *text, uint8_t textSize) {
+  const int16_t width = (int16_t)strlen(text) * 6 * textSize;
+  return clamp16((int16_t)((SCREEN_W - width) / 2), 0, SCREEN_W - 1);
+}
+
+static void drawCenteredText(const char *text, int16_t y, uint8_t textSize, uint16_t color) {
+  display.setTextSize(textSize);
+  display.setTextColor(color);
+  display.setCursor(centeredTextX(text, textSize), y);
+  display.print(text);
+}
+
+static void drawSpeciesArtLarge(const CatchFish &c, int16_t cx, int16_t cy) {
+  const SpeciesDef &def = SPECIES[c.species];
+  int16_t w = clamp16((int16_t)(32 + c.lengthTenths / 12), 44, 94);
+  int16_t h = (def.silhouetteType == SIL_BULKY) ? 28 :
+              (def.silhouetteType == SIL_LONG ? 18 : 23);
+  if (c.species == MUSKY) { w = 100; h = 20; }
+
+  display.fillTriangle(cx - w / 2, cy,
+                       cx - w / 2 - 14, cy - h / 2,
+                       cx - w / 2 - 14, cy + h / 2,
+                       def.colorB);
+  display.fillRect(cx - w / 2, cy - h / 2, w, h, def.colorA);
+  display.fillCircle(cx + w / 2, cy, h / 2, def.colorA);
+  display.drawFastHLine(cx - w / 3, cy, w / 2, def.colorB);
+  display.drawPixel(cx + w / 2 + 2, cy - 3, ST77XX_WHITE);
+  if (c.species == CHANNEL_CATFISH) {
+    display.drawLine(cx + w / 2, cy + 3, cx + w / 2 + 12, cy + 9, def.colorB);
+    display.drawLine(cx + w / 2, cy + 1, cx + w / 2 + 12, cy - 7, def.colorB);
+  }
+  if (c.species == MUSKY) {
+    display.drawRect(cx - w / 2 - 4, cy - h / 2 - 4, w + 12, h + 8, C_WARNING);
+  }
+}
+
+static void drawSingleRevealFrame() {
+  display.fillScreen(C_PANEL);
+  display.fillRect(0, 0, SCREEN_W, 36, C_SKY_DARK);
+  drawCenteredText("CATCH REVEAL", 7, 2, ST77XX_WHITE);
+  drawCenteredText("PRESS BUTTON", 24, 1, C_TEXT_DIM);
+
+  const PlayerState &p = players[0];
+  if (revealIndex >= p.catchCount) {
+    drawCenteredText(p.catchCount == 0 ? "NO FISH" : "NO MORE", 135, 3, C_TEXT_DIM);
+    char haul[24];
+    snprintf(haul, sizeof(haul), "HAUL $%lu", (unsigned long)p.totalValue);
+    drawCenteredText(haul, 260, 2, ST77XX_WHITE);
+    return;
+  }
+
+  const CatchFish &c = p.catches[revealIndex];
+  drawCenteredText(SPECIES[c.species].name, 67, 2, ST77XX_WHITE);
+  drawSpeciesArtLarge(c, SCREEN_W / 2, 142);
+
+  char line[28];
+  snprintf(line, sizeof(line), "%d.%d in", c.lengthTenths / 10, c.lengthTenths % 10);
+  drawCenteredText(line, 190, 2, C_TEXT_DIM);
+  snprintf(line, sizeof(line), "$%u", c.value);
+  drawCenteredText(line, 220, 3, C_WARNING);
+  snprintf(line, sizeof(line), "HAUL $%lu", (unsigned long)runningRevealTotal(p, revealIndex));
+  drawCenteredText(line, 270, 2, ST77XX_WHITE);
+
+  if (c.species == MUSKY) {
+    display.drawRect(2, 38, 236, 278, C_WARNING);
+    display.drawRect(4, 40, 232, 274, C_WARNING);
+    queueTone(BUZZER_2_PIN, 1180, 110);
+    queueTone(BUZZER_1_PIN, 1320, 110);
+  }
+}
+
 static void drawRevealFrame() {
+  if (playMode == MODE_SINGLE_PLAYER) {
+    drawSingleRevealFrame();
+    return;
+  }
+
   display.fillScreen(C_PANEL);
   display.fillRect(0, 0, SCREEN_W, 36, C_SKY_DARK);
   display.setTextSize(2);
@@ -1821,6 +1975,17 @@ static void drawFinalScoreFrame() {
   display.setTextColor(ST77XX_WHITE);
   display.setCursor(52, 32);
   display.print("FINAL HAUL");
+
+  if (playMode == MODE_SINGLE_PLAYER) {
+    display.fillRect(18, 86, 204, 134, rgb565(11, 25, 34));
+    display.drawRect(18, 86, 204, 134, ST77XX_WHITE);
+    char line[28];
+    snprintf(line, sizeof(line), "$%lu", (unsigned long)players[0].totalValue);
+    drawCenteredText(line, 125, 4, C_WARNING);
+    snprintf(line, sizeof(line), "%u fish", players[0].catchCount);
+    drawCenteredText(line, 185, 2, C_TEXT_DIM);
+    return;
+  }
 
   display.fillRect(12, 86, 98, 105, rgb565(5, 31, 44));
   display.drawRect(12, 86, 98, 105, C_P1);
@@ -1861,59 +2026,71 @@ static void drawWinnerFrame(uint32_t now, bool replayMode) {
   display.drawRect(5, 5, 230, 310, border);
   display.drawRect(8, 8, 224, 304, rgb565(59, 73, 82));
 
-  display.setTextSize(2);
-  display.setTextColor(ST77XX_WHITE);
-  display.setCursor(52, 42);
-  display.print("LAKE RESULT");
-
-  display.setTextSize(3);
-  if (players[0].totalValue > players[1].totalValue) {
-    display.setTextColor(C_P1);
-    display.setCursor(64, 100);
-    display.print("P1 WINS");
-  } else if (players[1].totalValue > players[0].totalValue) {
-    display.setTextColor(C_P2);
-    display.setCursor(64, 100);
-    display.print("P2 WINS");
+  if (playMode == MODE_SINGLE_PLAYER) {
+    drawCenteredText("FINAL HAUL", 42, 2, ST77XX_WHITE);
+    char line[28];
+    snprintf(line, sizeof(line), "$%lu", (unsigned long)players[0].totalValue);
+    drawCenteredText(line, 105, 4, C_WARNING);
+    snprintf(line, sizeof(line), "%u fish", players[0].catchCount);
+    drawCenteredText(line, 165, 2, C_TEXT_DIM);
+    if (replayMode) {
+      drawCenteredText("Press to Play Again", 230, 1, ST77XX_WHITE);
+      drawCenteredText("Either button", 246, 1, C_TEXT_DIM);
+    }
   } else {
-    display.setTextColor(C_WARNING);
-    display.setCursor(88, 100);
-    display.print("TIE");
-  }
-
-  display.setTextSize(2);
-  display.setTextColor(C_P1);
-  display.setCursor(36, 157);
-  display.print('$'); display.print(players[0].totalValue);
-  display.setTextColor(ST77XX_WHITE);
-  display.setCursor(107, 157);
-  display.print("-");
-  display.setTextColor(C_P2);
-  display.setCursor(143, 157);
-  display.print('$'); display.print(players[1].totalValue);
-
-  if (replayMode) {
-    display.setTextSize(1);
+    display.setTextSize(2);
     display.setTextColor(ST77XX_WHITE);
-    display.setCursor(49, 220);
-    display.print("EACH PLAYER PRESS BUTTON");
-    display.setCursor(76, 234);
-    display.print("TO PLAY AGAIN");
+    display.setCursor(52, 42);
+    display.print("LAKE RESULT");
 
-    display.setTextColor(replayReady[0] ? C_P1 : C_TEXT_DIM);
-    display.setCursor(28, 270);
-    display.print(replayReady[0] ? "P1 READY" : "P1 WAIT");
-    display.setTextColor(replayReady[1] ? C_P2 : C_TEXT_DIM);
-    display.setCursor(154, 270);
-    display.print(replayReady[1] ? "P2 READY" : "P2 WAIT");
-  } else {
-    display.setTextSize(1);
-    display.setTextColor(C_TEXT_DIM);
-    display.setCursor(61, 235);
-    display.print("BUTTONS CAN READY NOW");
+    display.setTextSize(3);
+    if (players[0].totalValue > players[1].totalValue) {
+      display.setTextColor(C_P1);
+      display.setCursor(64, 100);
+      display.print("P1 WINS");
+    } else if (players[1].totalValue > players[0].totalValue) {
+      display.setTextColor(C_P2);
+      display.setCursor(64, 100);
+      display.print("P2 WINS");
+    } else {
+      display.setTextColor(C_WARNING);
+      display.setCursor(88, 100);
+      display.print("TIE");
+    }
+
+    display.setTextSize(2);
+    display.setTextColor(C_P1);
+    display.setCursor(36, 157);
+    display.print('$'); display.print(players[0].totalValue);
+    display.setTextColor(ST77XX_WHITE);
+    display.setCursor(107, 157);
+    display.print("-");
+    display.setTextColor(C_P2);
+    display.setCursor(143, 157);
+    display.print('$'); display.print(players[1].totalValue);
+
+    if (replayMode) {
+      display.setTextSize(1);
+      display.setTextColor(ST77XX_WHITE);
+      display.setCursor(49, 220);
+      display.print("EACH PLAYER PRESS BUTTON");
+      display.setCursor(76, 234);
+      display.print("TO PLAY AGAIN");
+
+      display.setTextColor(replayReady[0] ? C_P1 : C_TEXT_DIM);
+      display.setCursor(28, 270);
+      display.print(replayReady[0] ? "P1 READY" : "P1 WAIT");
+      display.setTextColor(replayReady[1] ? C_P2 : C_TEXT_DIM);
+      display.setCursor(154, 270);
+      display.print(replayReady[1] ? "P2 READY" : "P2 WAIT");
+    } else {
+      display.setTextSize(1);
+      display.setTextColor(C_TEXT_DIM);
+      display.setCursor(61, 235);
+      display.print("BUTTONS CAN READY NOW");
+    }
   }
 
-  // Cheap celebratory bubbles/sparkles.
   uint8_t phase = (uint8_t)((now / 180U) & 7U);
   for (uint8_t i = 0; i < 7; ++i) {
     int16_t x = 22 + i * 31;
@@ -1927,6 +2104,15 @@ static void drawWinnerFrame(uint32_t now, bool replayMode) {
 // -----------------------------------------------------------------------------
 
 static void handleButtons(const GameInput &input, uint32_t now) {
+  if (playMode == MODE_SINGLE_PLAYER) {
+    // Either button controls the centered net. Ignore a two-button chord so the
+    // launcher's hold-both-buttons menu shortcut remains clean.
+    const bool bothHeld = input.leftButton && input.rightButton;
+    const bool pressed = !bothHeld && (input.leftPressed || input.rightPressed);
+    tryStartCast(players[0], 0, pressed, now);
+    return;
+  }
+
   tryStartCast(players[0], 0, input.leftPressed, now);
   tryStartCast(players[1], 1, input.rightPressed, now);
 }
@@ -1937,45 +2123,45 @@ static void updateFishing(const GameInput &input, uint32_t now, uint32_t dtMs) {
     return;
   }
 
-  players[0].switchState = (uint8_t)readSwitchState(false);
-  players[1].switchState = (uint8_t)readSwitchState(true);
-  updateDepth(players[0], players[0].switchState, dtMs);
-  updateDepth(players[1], players[1].switchState, dtMs);
-  handleButtons(input, now);
+  if (playMode == MODE_SINGLE_PLAYER) {
+    players[0].switchState = (uint8_t)readSinglePlayerSwitchState();
+    updateDepth(players[0], players[0].switchState, dtMs);
+  } else {
+    players[0].switchState = (uint8_t)readSwitchState(false);
+    players[1].switchState = (uint8_t)readSwitchState(true);
+    updateDepth(players[0], players[0].switchState, dtMs);
+    updateDepth(players[1], players[1].switchState, dtMs);
+  }
 
+  handleButtons(input, now);
   updateFish(dtMs);
-  updateCast(players[0], now);
-  updateCast(players[1], now);
+  for (uint8_t i = 0; i < activePlayerCount(); ++i) updateCast(players[i], now);
   resolveBothCastsIfReady(now);
   maintainFishPopulation(now);
+  for (uint8_t i = 0; i < activePlayerCount(); ++i) updateMissReturn(players[i], now);
 
-  for (uint8_t i = 0; i < 2; ++i) updateMissReturn(players[i], now);
-
-  if (players[0].secured && players[1].secured) beginTransition(now);
+  if (allActivePlayersSecured()) beginTransition(now);
 }
 
 static void updateTimeout(uint32_t now, uint32_t dtMs) {
   updateFish(dtMs);
-  updateCast(players[0], now);
-  updateCast(players[1], now);
+  for (uint8_t i = 0; i < activePlayerCount(); ++i) updateCast(players[i], now);
   resolveBothCastsIfReady(now);
-
-  if (players[0].secured && players[1].secured) beginTransition(now);
+  if (allActivePlayersSecured()) beginTransition(now);
 }
 
 static void updateTransition(uint32_t now) {
   const uint32_t elapsed = now - stateStartedAt;
   if (elapsed >= TRANSITION_MS) {
-    players[0].netY = WATER_TOP + 2;
-    players[1].netY = WATER_TOP + 2;
+    for (uint8_t i = 0; i < activePlayerCount(); ++i) players[i].netY = WATER_TOP + 2;
     beginReveal(now);
     return;
   }
 
-  // Hold for a beat so the player can see the basket cinch around the catch,
-  // then haul the closed bag upward with a smooth winch curve.
   if (elapsed <= NET_CINCH_MS) {
-    for (uint8_t i = 0; i < 2; ++i) players[i].netY = players[i].transitionFromY;
+    for (uint8_t i = 0; i < activePlayerCount(); ++i) {
+      players[i].netY = players[i].transitionFromY;
+    }
     return;
   }
 
@@ -1985,7 +2171,7 @@ static void updateTransition(uint32_t now) {
   const int32_t t2 = (t * t) / 1024L;
   const int32_t smooth = (t2 * (3072L - 2L * t)) / 1024L;
 
-  for (uint8_t i = 0; i < 2; ++i) {
+  for (uint8_t i = 0; i < activePlayerCount(); ++i) {
     const int32_t travel = players[i].transitionFromY - (WATER_TOP + 2);
     players[i].netY = (int16_t)(players[i].transitionFromY -
                       (travel * smooth) / 1024L);
@@ -2008,14 +2194,27 @@ static void advanceReveal(const GameInput &input, uint32_t now) {
 }
 
 static void handleReplayPresses(const GameInput &input) {
+  // Never consume a simultaneous chord as replay input; that chord belongs to
+  // the launcher's hold-both-buttons menu shortcut.
+  if (input.leftButton && input.rightButton) return;
+
+  if (playMode == MODE_SINGLE_PLAYER) {
+    if (input.leftPressed || input.rightPressed) replayReady[0] = true;
+    return;
+  }
+
   if (input.leftPressed) replayReady[0] = true;
   if (input.rightPressed) replayReady[1] = true;
 }
 
-static void restartIfBothReady(uint32_t now) {
-  if (!replayReady[0] || !replayReady[1]) return;
+static void restartIfReady(uint32_t now) {
+  const bool ready = playMode == MODE_SINGLE_PLAYER ? replayReady[0] :
+                     (replayReady[0] && replayReady[1]);
+  if (!ready) return;
+
+  // Replay stays in the chosen mode and begins a fresh round immediately.
   resetRound(now);
-  setState(STATE_READY, now);
+  beginFishing(now);
 }
 
 // -----------------------------------------------------------------------------
@@ -2061,6 +2260,7 @@ static void enter() {
   const uint32_t now = millis();
   randomSeed((uint32_t)micros() ^ ((uint32_t)digitalRead(LEFT_UP_PIN) << 10) ^
              ((uint32_t)digitalRead(RIGHT_DOWN_PIN) << 18));
+  playMode = MODE_SINGLE_PLAYER;
   resetRound(now);
   setState(STATE_READY, now);
   render(now);
@@ -2074,23 +2274,20 @@ static void update(const GameInput &input) {
 
   switch (state) {
     case STATE_READY: {
+      updateReadyModeSelection();
       const bool anyButtonHeld = input.leftButton || input.rightButton;
 
-      // First require every button to be released. This is especially important
-      // when the player enters while still holding the launcher selection button.
+      // Entering-button presses must be fully released before confirmation can
+      // start the selected mode.
       if (!startInputArmed) {
         if (!anyButtonHeld) startInputArmed = true;
         break;
       }
 
-      // Start only from a fresh single-button press. A simultaneous two-button
-      // chord is deliberately left alone so the launcher's hold-both menu
-      // shortcut remains available. Because this state does not fall through to
-      // STATE_FISHING, the start press is consumed and cannot also cast a net.
+      // A clean single-button press confirms the highlighted mode. The press is
+      // consumed here and cannot also become the first cast.
       const bool bothHeld = input.leftButton && input.rightButton;
-      if (!bothHeld && (input.leftPressed || input.rightPressed)) {
-        beginFishing(now);
-      }
+      if (!bothHeld && (input.leftPressed || input.rightPressed)) beginFishing(now);
       break;
     }
 
@@ -2111,14 +2308,17 @@ static void update(const GameInput &input) {
       break;
 
     case STATE_FINAL_SCORE:
-      if ((uint32_t)(now - stateStartedAt) >= FINAL_SCORE_MS) beginWinner(now);
+      if ((uint32_t)(now - stateStartedAt) >= FINAL_SCORE_MS) {
+        if (playMode == MODE_SINGLE_PLAYER) beginReplayWait(now);
+        else beginWinner(now);
+      }
       break;
 
     case STATE_WINNER:
       handleReplayPresses(input);
       if ((uint32_t)(now - stateStartedAt) >= WINNER_HOLD_MS) {
         beginReplayWait(now);
-        restartIfBothReady(now);
+        restartIfReady(now);
       }
       break;
 
@@ -2127,7 +2327,7 @@ static void update(const GameInput &input) {
       const bool oldP2 = replayReady[1];
       handleReplayPresses(input);
       if (oldP1 != replayReady[0] || oldP2 != replayReady[1]) screenDirty = true;
-      restartIfBothReady(now);
+      restartIfReady(now);
       break;
     }
   }
