@@ -103,7 +103,7 @@ enum class BossPhase : uint8_t {
   Defeated
 };
 
-enum class EffectType : uint8_t { None, Flash, Explosion, Dust, Spark };
+enum class EffectType : uint8_t { None, Flash, Explosion, TankExplosion, Dust, Spark };
 
 struct StaticBox {
   float x, y, w, d, h;
@@ -137,8 +137,10 @@ struct Soldier {
   float homeX, homeY;
   float heading;
   bool alive;
+  bool dying;
   uint8_t anim;
   uint32_t nextDecision;
+  uint32_t deathAt;
 };
 
 struct Projectile {
@@ -624,6 +626,15 @@ static void spawnEffect(EffectType type, float x, float y, uint16_t life) {
   effects[slot] = {type, x, y, g.simNow, life};
 }
 
+static void killSoldier(Soldier &s) {
+  if (!s.alive && !s.dying) return;
+  s.alive = false;
+  s.dying = true;
+  s.anim = 0;
+  s.deathAt = g.simNow;
+  g.score += 20;
+}
+
 static void damagePlayer(uint8_t damage) {
   if (g.mode != Mode::PLAYING || !g.controlsArmed) return;
   if ((int32_t)(g.simNow - g.player.invulnerableUntil) < 0) return;
@@ -650,7 +661,8 @@ static void killEnemy(Enemy &e) {
   e.active = false;
   e.windup = false;
   g.score += 100;
-  spawnEffect(EffectType::Explosion, e.x, e.y, 700);
+  // Enemy tanks get a longer, rising retro fireball/mushroom-cloud death.
+  spawnEffect(EffectType::TankExplosion, e.x, e.y, 1600);
   sfxExplosion();
 }
 
@@ -759,8 +771,7 @@ static void resolveCannonHit(const ShotHit &hit) {
       damageEnemy(enemies[hit.index], 50);
       break;
     case HIT_SOLDIER:
-      soldiers[hit.index].alive = false;
-      g.score += 20;
+      killSoldier(soldiers[hit.index]);
       spawnEffect(EffectType::Explosion, hit.x, hit.y, 350);
       break;
     case HIT_BOSS_DEFENDER:
@@ -807,8 +818,7 @@ static void resolveCannonHit(const ShotHit &hit) {
     Soldier &s = soldiers[i];
     if (!s.alive) continue;
     if (dist2(s.x, s.y, hit.x, hit.y) < 3.5f*3.5f && !lineBlocked(hit.x, hit.y, s.x, s.y)) {
-      s.alive = false;
-      g.score += 20;
+      killSoldier(s);
     }
   }
 }
@@ -826,8 +836,7 @@ static void fireCannon() {
 static void fireMgRound() {
   ShotHit hit = tracePlayerShot(60.0f, true);
   if (hit.kind == HIT_SOLDIER) {
-    soldiers[hit.index].alive = false;
-    g.score += 20;
+    killSoldier(soldiers[hit.index]);
     spawnEffect(EffectType::Spark, hit.x, hit.y, 180);
   } else if (hit.kind == HIT_ENEMY) {
     Enemy &e = enemies[hit.index];
@@ -1623,6 +1632,20 @@ static const uint8_t SOLDIER_SPRITE[5*9] = {
   20,0,0,0,20,
   20,0,0,0,20
 };
+static const uint8_t SOLDIER_FALLEN_SPRITE[9*5] = {
+  0,0,19,19,19,0,0,0,0,
+  0,19,20,20,20,19,0,0,0,
+  20,20,20,20,20,20,19,0,0,
+  0,19,20,20,20,19,0,20,20,
+  0,0,0,20,20,0,0,0,20
+};
+static const uint8_t BLOOD_POOL_SPRITE[9*5] = {
+  0,0,0,28,11,28,0,0,0,
+  0,28,11,11,11,11,28,0,0,
+  28,11,11,28,11,11,11,28,0,
+  0,28,11,11,11,11,28,0,0,
+  0,0,0,28,11,28,0,0,0
+};
 static const uint8_t SHELL_SPRITE[3*3] = {
   0,15,0,
   15,21,15,
@@ -1650,8 +1673,36 @@ static void drawEnemySprite(const Enemy &e, EnemyClass cls) {
 }
 
 static void drawSoldier(const Soldier &s) {
-  if (!s.alive) return;
-  drawDepthRectSprite(s.x, s.y, 0, 0.75f, 1.85f, SOLDIER_SPRITE, 5, 9);
+  if (s.alive) {
+    drawDepthRectSprite(s.x, s.y, 0, 0.75f, 1.85f, SOLDIER_SPRITE, 5, 9);
+    return;
+  }
+  if (!s.dying) return;
+
+  uint32_t age = elapsedMs(g.simNow, s.deathAt);
+  float fall = clampf(age / 260.0f, 0.0f, 1.0f);
+  float bleed = clampf((age - 90.0f) / 700.0f, 0.0f, 1.0f);
+  float dx = sinf(s.heading);
+  float dy = cosf(s.heading);
+  float bodyX = s.x + dx * (0.16f * fall);
+  float bodyY = s.y + dy * (0.16f * fall);
+
+  if (bleed > 0.02f) {
+    drawDepthRectSprite(bodyX + dx * 0.12f, bodyY + dy * 0.12f, 0.01f,
+                        0.70f + 0.95f * bleed, 0.22f + 0.22f * bleed,
+                        BLOOD_POOL_SPRITE, 9, 5);
+  }
+
+  if (fall < 0.45f) {
+    drawDepthRectSprite(bodyX, bodyY, 0.0f,
+                        0.75f + 0.25f * fall,
+                        1.85f - 0.95f * fall,
+                        SOLDIER_SPRITE, 5, 9);
+  } else {
+    drawDepthRectSprite(bodyX + dx * 0.06f, bodyY + dy * 0.06f, 0.0f,
+                        1.35f + 0.30f * fall, 0.56f,
+                        SOLDIER_FALLEN_SPRITE, 9, 5);
+  }
 }
 
 static void drawProjectile(const Projectile &p) {
@@ -1659,10 +1710,86 @@ static void drawProjectile(const Projectile &p) {
   drawDepthRectSprite(p.x, p.y, 0.8f, 0.45f, 0.45f, SHELL_SPRITE, 3, 3);
 }
 
+static void drawEffectBlob(float wx, float wy, float wz, float worldRadius,
+                           uint8_t outerCol, uint8_t innerCol, uint32_t phase) {
+  CamV c = worldToCam(wx, wy, wz);
+  ScreenV p;
+  if (!projectCam(c,p) || c.d > 120.0f) return;
+
+  int rad = clampi((int)(FOCAL * worldRadius / c.d), 1, 9);
+  int r2 = rad * rad;
+  int inner = rad > 2 ? rad - 2 : 1;
+  int inner2 = inner * inner;
+  for (int yy = -rad; yy <= rad; ++yy) {
+    for (int xx = -rad; xx <= rad; ++xx) {
+      int d2 = xx*xx + yy*yy;
+      if (d2 > r2) continue;
+
+      // Chunky checker/dither keeps the cloud in the same authored 8-bit style
+      // as the tanks instead of reading like a smooth modern particle effect.
+      uint32_t h = (uint32_t)((xx + rad) * 17 + (yy + rad) * 31) + phase;
+      if (d2 <= inner2) {
+        if ((h & 3u) != 0u) putDepth((int)p.x + xx, (int)p.y + yy, c.d - 0.02f, innerCol);
+      } else if ((h & 1u) == 0u) {
+        putDepth((int)p.x + xx, (int)p.y + yy, c.d - 0.02f, outerCol);
+      }
+    }
+  }
+}
+
+static void drawTankExplosion(const Effect &e, uint32_t age) {
+  const float t = clampf(age / (float)e.life, 0.0f, 1.0f);
+  const uint32_t phase = age / 45u;
+
+  // Initial ground-level blast blooms quickly around the destroyed hull.
+  if (age < 360u) {
+    float b = age / 360.0f;
+    drawEffectBlob(e.x, e.y, 0.75f + b * 0.25f,
+                   0.65f + b * 1.45f, 15, 21, phase);
+    if (age < 180u) {
+      drawEffectBlob(e.x, e.y, 0.95f, 0.42f + b * 0.65f, 12, 1, phase + 7u);
+    }
+  }
+
+  // The stem climbs vertically from the wreck. Separate lumpy fire cells make
+  // the shape read as a tiny arcade mushroom cloud rather than one tall circle.
+  float topZ = 1.15f + 5.0f * t;
+  int stemBlobs = 3 + (int)(t * 3.0f);
+  for (int i = 0; i < stemBlobs; ++i) {
+    float u = (i + 1) / (float)(stemBlobs + 1);
+    float wobble = sinf((float)i * 2.3f + age * 0.006f) * (0.10f + 0.14f * u);
+    float z = 0.65f + (topZ - 0.65f) * u;
+    float r = 0.28f + 0.18f * u;
+    uint8_t outer = age < 1050u ? 12 : 29;
+    uint8_t inner = age < 1250u ? 15 : 12;
+    drawEffectBlob(e.x + wobble, e.y, z, r, outer, inner, phase + i * 5u);
+  }
+
+  // Broad cap: five overlapping low-resolution fire lobes rise above the tank.
+  // It starts compact, then spreads as it climbs and darkens near the end.
+  float spread = 0.45f + 0.95f * t;
+  float capR = 0.62f + 0.55f * t;
+  uint8_t capOuter = age < 950u ? 15 : (age < 1350u ? 12 : 29);
+  uint8_t capInner = age < 1150u ? 21 : 15;
+  drawEffectBlob(e.x, e.y, topZ, capR * 1.15f, capOuter, capInner, phase + 11u);
+  drawEffectBlob(e.x - spread, e.y, topZ - 0.08f, capR * 0.82f, capOuter, capInner, phase + 17u);
+  drawEffectBlob(e.x + spread, e.y, topZ - 0.05f, capR * 0.88f, capOuter, capInner, phase + 23u);
+  drawEffectBlob(e.x - spread * 0.35f, e.y - spread * 0.45f, topZ + 0.28f,
+                 capR * 0.72f, capOuter, capInner, phase + 29u);
+  drawEffectBlob(e.x + spread * 0.30f, e.y + spread * 0.38f, topZ + 0.18f,
+                 capR * 0.68f, capOuter, capInner, phase + 37u);
+}
+
 static void drawEffect(const Effect &e) {
   if (e.type == EffectType::None) return;
   uint32_t age = elapsedMs(g.simNow, e.born);
   if (age >= e.life) return;
+
+  if (e.type == EffectType::TankExplosion) {
+    drawTankExplosion(e, age);
+    return;
+  }
+
   CamV c = worldToCam(e.x, e.y, 0.8f);
   ScreenV p;
   if (!projectCam(c,p) || c.d > 120) return;
@@ -1712,16 +1839,24 @@ static void drawTargetMarker(float wx, float wy, float wz, float sizeWorld) {
   CamV c = worldToCam(wx,wy,wz);
   ScreenV p;
   if (!projectCam(c,p) || c.d > 115.0f) return;
-  int r=clampi((int)(FOCAL*sizeWorld/c.d),3,7);
+
+  // Keep the lock marker from hiding tiny distant sprites. At long range it is
+  // only three corner pixels; nearby targets retain the small broken triangle.
+  int r=clampi((int)(FOCAL*sizeWorld/c.d),2,5);
   float phase=g.simNow*0.0005f;
   float ax[3],ay[3];
   for(int i=0;i<3;++i){float a=phase-PI_F*0.5f+i*TWO_PI_F/3.0f; ax[i]=p.x+cosf(a)*r; ay[i]=p.y+sinf(a)*r;}
-  // Three shortened red edges leave clear gaps at corners.
+
+  if (c.d > 42.0f) {
+    for (int i=0;i<3;++i) putDepth((int)ax[i],(int)ay[i],c.d-0.02f,11);
+    return;
+  }
+
   for(int i=0;i<3;++i){
     int j=(i+1)%3;
-    float x0=ax[i]+0.18f*(ax[j]-ax[i]), y0=ay[i]+0.18f*(ay[j]-ay[i]);
-    float x1=ax[i]+0.82f*(ax[j]-ax[i]), y1=ay[i]+0.82f*(ay[j]-ay[i]);
-    int steps=clampi((int)fmaxf(fabsf(x1-x0),fabsf(y1-y0)),1,30);
+    float x0=ax[i]+0.30f*(ax[j]-ax[i]), y0=ay[i]+0.30f*(ay[j]-ay[i]);
+    float x1=ax[i]+0.70f*(ax[j]-ax[i]), y1=ay[i]+0.70f*(ay[j]-ay[i]);
+    int steps=clampi((int)fmaxf(fabsf(x1-x0),fabsf(y1-y0)),1,20);
     for(int k=0;k<=steps;++k){float t=k/(float)steps; putDepth((int)(x0+(x1-x0)*t),(int)(y0+(y1-y0)*t),c.d-0.02f,11);}
   }
 }
@@ -1997,9 +2132,10 @@ static void drawCockpit() {
   fillRectLogical(53,baseY-2,15,5,10);
   if((int32_t)(g.simNow-g.player.cannonFlashUntil)<0){fillRectLogical(57,78,7,4,21);fillRectLogical(59,75,3,4,15);}
 
-  // Crosshair at true horizontal firing ray / horizon.
-  lineLogical(55,HORIZON_Y,58,HORIZON_Y,1); lineLogical(62,HORIZON_Y,65,HORIZON_Y,1);
-  lineLogical(60,HORIZON_Y-5,60,HORIZON_Y-2,1); lineLogical(60,HORIZON_Y+2,60,HORIZON_Y+5,1);
+  // Compact open-center crosshair at the true firing ray / horizon. The old
+  // 11x11 mark could completely cover a tank once it shrank to only a few pixels.
+  lineLogical(57,HORIZON_Y,58,HORIZON_Y,1); lineLogical(62,HORIZON_Y,63,HORIZON_Y,1);
+  lineLogical(60,HORIZON_Y-3,60,HORIZON_Y-2,1); lineLogical(60,HORIZON_Y+2,60,HORIZON_Y+3,1);
 
   // Armor: five segments, partial by health.
   text3x5(5,139,"ARM",22,1);
@@ -2113,7 +2249,8 @@ static void startNewRun() {
   for(uint8_t i=0;i<SOLDIER_COUNT;++i){
     soldiers[i].x=SOLDIER_DEFS[i].x; soldiers[i].y=SOLDIER_DEFS[i].y;
     soldiers[i].homeX=soldiers[i].x; soldiers[i].homeY=soldiers[i].y;
-    soldiers[i].heading=(i&1)?1.2f:-1.1f; soldiers[i].alive=true; soldiers[i].anim=0; soldiers[i].nextDecision=g.simNow+200+i*23;
+    soldiers[i].heading=(i&1)?1.2f:-1.1f; soldiers[i].alive=true; soldiers[i].dying=false;
+    soldiers[i].anim=0; soldiers[i].nextDecision=g.simNow+200+i*23; soldiers[i].deathAt=0;
   }
 
   g.boss.phase = BossPhase::Dormant;
