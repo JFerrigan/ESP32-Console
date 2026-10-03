@@ -1420,60 +1420,40 @@ static inline void drawEnemy(StripCanvas& c,const ProjectedNote& n){
   auto sx=[&](int16_t v){return (int16_t)(n.x+(v*q)/256);};
   auto sy=[&](int16_t v){return (int16_t)(n.y+(v*q)/256);};
 
-  // Notes are deliberately icon-like rather than lettered. Single-button notes
-  // use the same clean, symmetric interceptor silhouette; lane + color tells the
-  // player which button to hit. Dual notes are wider and split cyan/pink.
+  // Simple wide-diamond notes. Color indicates the required button.
   if(n.mask==BOTH_GUNS){
-    Point16 nose{n.x,sy(-8)};
-    Point16 leftTip{sx(-15),sy(-2)};
-    Point16 leftTail{sx(-9),sy(6)};
-    Point16 tail{n.x,sy(8)};
-    Point16 rightTail{sx(9),sy(6)};
-    Point16 rightTip{sx(15),sy(-2)};
-    Point16 centerTop{n.x,sy(-3)};
+    Point16 top{n.x,sy(-6)};
+    Point16 left{sx(-16),n.y};
+    Point16 bottom{n.x,sy(7)};
+    Point16 right{sx(16),n.y};
+    Point16 center{n.x,n.y};
 
-    // Broad double-wing body.
-    triangleLocal(c,nose,leftTip,centerTop,C_HULL_SHADOW);
-    triangleLocal(c,leftTip,leftTail,centerTop,C_HULL_LIGHT);
-    triangleLocal(c,leftTail,tail,centerTop,C_HULL_SHADOW);
-    triangleLocal(c,nose,centerTop,rightTip,C_HULL_PINK);
-    triangleLocal(c,rightTip,centerTop,rightTail,C_HULL_LIGHT);
-    triangleLocal(c,rightTail,centerTop,tail,C_HULL_PINK);
+    triangleLocal(c,top,left,center,C_HULL_SHADOW);
+    triangleLocal(c,left,bottom,center,C_HULL_LIGHT);
+    triangleLocal(c,top,center,right,C_HULL_PINK);
+    triangleLocal(c,center,bottom,right,C_HULL_LIGHT);
 
-    // Two-color outline makes the simultaneous hit readable without letters.
-    lineLocal(c,nose,leftTip,C_CYAN);
-    lineLocal(c,leftTip,leftTail,C_CYAN);
-    lineLocal(c,leftTail,tail,C_CYAN);
-    lineLocal(c,nose,rightTip,C_PINK);
-    lineLocal(c,rightTip,rightTail,C_PINK);
-    lineLocal(c,rightTail,tail,C_PINK);
-    lineLocal(c,nose,tail,C_HIGHLIGHT);
-    fillRectLocal(c,{(int16_t)(n.x-1),sy(-1),3,max<int16_t>(2,(int16_t)(3*q/256))},C_HIGHLIGHT);
+    lineLocal(c,top,left,C_CYAN);
+    lineLocal(c,left,bottom,C_CYAN);
+    lineLocal(c,bottom,right,C_PINK);
+    lineLocal(c,right,top,C_PINK);
   } else {
     const uint16_t edge=(n.mask==LEFT_GUN)?C_CYAN:C_PINK;
-    Point16 v[6]={
-      {n.x,sy(-8)},
-      {sx(10),sy(-3)},
-      {sx(7),sy(5)},
-      {n.x,sy(8)},
-      {sx(-7),sy(5)},
-      {sx(-10),sy(-3)}
-    };
-    Point16 ctr{n.x,n.y};
+    Point16 top{n.x,sy(-6)};
+    Point16 left{sx(-14),n.y};
+    Point16 bottom{n.x,sy(7)};
+    Point16 right{sx(14),n.y};
+    Point16 center{n.x,n.y};
 
-    // Faceted interior, kept perfectly symmetric now that no L/R glyph sits on it.
-    triangleLocal(c,ctr,v[0],v[1],C_HULL_LIGHT);
-    triangleLocal(c,ctr,v[1],v[2],C_HULL_SHADOW);
-    triangleLocal(c,ctr,v[2],v[3],C_HULL_LIGHT);
-    triangleLocal(c,ctr,v[3],v[4],C_HULL_SHADOW);
-    triangleLocal(c,ctr,v[4],v[5],C_HULL_LIGHT);
-    triangleLocal(c,ctr,v[5],v[0],C_HULL_SHADOW);
-    for(uint8_t i=0;i<6;i++) lineLocal(c,v[i],v[(i+1)%6],edge);
+    triangleLocal(c,top,left,center,C_HULL_SHADOW);
+    triangleLocal(c,left,bottom,center,C_HULL_LIGHT);
+    triangleLocal(c,top,center,right,C_HULL_LIGHT);
+    triangleLocal(c,center,bottom,right,C_HULL_SHADOW);
 
-    // Small centered energy spine replaces the old side marker/letter furniture.
-    lineLocal(c,{n.x,sy(-5)},{n.x,sy(5)},C_HIGHLIGHT);
-    lineLocal(c,{sx(-4),sy(1)},{n.x,sy(5)},edge);
-    lineLocal(c,{sx(4),sy(1)},{n.x,sy(5)},edge);
+    lineLocal(c,top,left,edge);
+    lineLocal(c,left,bottom,edge);
+    lineLocal(c,bottom,right,edge);
+    lineLocal(c,right,top,edge);
   }
 
   int32_t ae=n.timingErrorUs<0?-n.timingErrorUs:n.timingErrorUs;
