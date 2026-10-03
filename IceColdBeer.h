@@ -58,6 +58,7 @@ constexpr uint32_t MAX_ELAPSED_US = 250000UL;
 
 constexpr uint32_t SWITCH_DEBOUNCE_MS = 20UL;
 constexpr uint32_t SWITCH_ERROR_CENTER_MS = 120UL;
+constexpr uint32_t START_MENU_RELEASE_MS = 50UL;
 
 constexpr uint32_t BOOT_DURATION_MS = SHOW_ORIENTATION_TEST ? 3000UL : 1000UL;
 constexpr uint32_t READY_DURATION_MS = 600UL;
@@ -227,9 +228,11 @@ DebouncedSwitch rightSwitch;
 SwitchState leftSwitchState = SWITCH_CENTER;
 SwitchState rightSwitchState = SWITCH_CENTER;
 
-// Title-screen button gate. The launcher may still have a selection button held
-// when it enters this game, so the title cannot accept a start until both
-// buttons have been observed released once.
+// Title-screen click gate. Match Horizon Burn's robust menu behavior:
+// 1) require both buttons released briefly before arming,
+// 2) latch a fresh press so it cannot be lost between fixed simulation steps,
+// 3) emit the Start event only after release, and
+// 4) reject simultaneous/two-button chords as menu-exit input.
 bool leftButtonHeld = false;
 bool rightButtonHeld = false;
 bool leftButtonPressed = false;
@@ -237,6 +240,11 @@ bool rightButtonPressed = false;
 bool previousLeftButtonHeld = false;
 bool previousRightButtonHeld = false;
 bool startInputArmed = false;
+bool startReleaseTracking = false;
+uint32_t startAllReleasedAt = 0;
+uint8_t startPressMask = 0;
+bool startChordSeen = false;
+bool startClickPending = false;
 
 // ============================================================
 // Main-loop timing
@@ -426,7 +434,16 @@ void initializeInputs() {
   previousRightButtonHeld = rightButtonHeld;
   leftButtonPressed = false;
   rightButtonPressed = false;
+
+  // Do not let the launcher's selection press bleed into this title screen.
+  // If the buttons already happen to be released, start the 50 ms re-arm
+  // window immediately; otherwise the window begins on the first full release.
   startInputArmed = false;
+  startReleaseTracking = !(leftButtonHeld || rightButtonHeld);
+  startAllReleasedAt = millis();
+  startPressMask = 0;
+  startChordSeen = false;
+  startClickPending = false;
 
   initializeDebouncedSwitch(leftSwitch, LEFT_UP_PIN, LEFT_DOWN_PIN);
   initializeDebouncedSwitch(rightSwitch, RIGHT_UP_PIN, RIGHT_DOWN_PIN);
@@ -549,6 +566,59 @@ void updateInputs() {
   rightButtonHeld = (digitalRead(BUTTON_1_PIN) == LOW);
   leftButtonPressed = leftButtonHeld && !previousLeftButtonHeld;
   rightButtonPressed = rightButtonHeld && !previousRightButtonHeld;
+
+  // The title screen is updated on a fixed 60 Hz step, while inputs are polled
+  // every tick. A one-tick `Pressed` edge can therefore disappear before
+  // updateGame() sees it. Build a persistent press/release click here instead.
+  if (gameState == GAME_BOOT) {
+    const uint32_t nowMs = millis();
+    const uint8_t heldMask =
+        (leftButtonHeld ? 0x01 : 0x00) |
+        (rightButtonHeld ? 0x02 : 0x00);
+    const uint8_t pressedMask =
+        (leftButtonPressed ? 0x01 : 0x00) |
+        (rightButtonPressed ? 0x02 : 0x00);
+
+    // Arm only after both buttons have been continuously released for 50 ms.
+    // Check the elapsed release window before processing the current sample so
+    // the first press after a valid release cannot be missed at the boundary.
+    if (!startInputArmed && startReleaseTracking &&
+        (uint32_t)(nowMs - startAllReleasedAt) >= START_MENU_RELEASE_MS) {
+      startInputArmed = true;
+    }
+
+    if (!startInputArmed) {
+      if (heldMask == 0) {
+        if (!startReleaseTracking) {
+          startReleaseTracking = true;
+          startAllReleasedAt = nowMs;
+        }
+      } else {
+        startReleaseTracking = false;
+      }
+      return;
+    }
+
+    // Once armed, remember the press until all buttons are released. This is
+    // the crucial part that prevents a quick tap from vanishing between the
+    // high-rate input poll and the lower-rate fixed simulation update.
+    if (pressedMask != 0) {
+      startPressMask |= pressedMask;
+    }
+    if (heldMask == 0x03 || startPressMask == 0x03) {
+      startChordSeen = true;
+    }
+
+    if (heldMask == 0 && startPressMask != 0) {
+      const bool singleButtonClick =
+          !startChordSeen && (startPressMask == 0x01 || startPressMask == 0x02);
+      if (singleButtonClick) {
+        startClickPending = true;
+      }
+      startPressMask = 0;
+      startChordSeen = false;
+    }
+  }
 }
 
 // ============================================================
@@ -617,26 +687,15 @@ void updateGame(float dt) {
   const uint32_t elapsedStateMs = millis() - stateStartedAt;
 
   switch (gameState) {
-    case GAME_BOOT: {
-      const bool anyButtonHeld = leftButtonHeld || rightButtonHeld;
-
-      // The launcher can enter while its selection button is still down.
-      // First require a full release before accepting a start press.
-      if (!startInputArmed) {
-        if (!anyButtonHeld) startInputArmed = true;
-        break;
-      }
-
-      // A simultaneous two-button chord belongs to the launcher's menu-exit
-      // shortcut. Only a fresh non-chord press starts the game. This state does
-      // not fall through, so the start press is consumed here.
-      const bool bothHeld = leftButtonHeld && rightButtonHeld;
-      if (!bothHeld && (leftButtonPressed || rightButtonPressed)) {
+    case GAME_BOOT:
+      // updateInputs() turns a valid press-and-release into a persistent event.
+      // Consume it here exactly once; it cannot be lost between simulation steps.
+      if (startClickPending) {
+        startClickPending = false;
         resetRun();
         startCurrentTarget();
       }
       break;
-    }
 
     case GAME_READY:
       // Controls remain live/debounced, but the bar does not move here.
