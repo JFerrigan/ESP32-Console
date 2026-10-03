@@ -57,7 +57,6 @@ const char* const PINNED_GAME_ORDER[] = {
   "HORIZON BURN",
   "TANK",
   "SPACE EVADERS",
-  "SPACE EVADERS V2",
   "ICE COLD BEER",
   "DEEP VECTOR",
   "METEOR SWEEP"
@@ -562,7 +561,7 @@ void drawMainMenu() {
 
   display.setCursor(18, 300);
   display.println(
-    "RIGHT BUTTON: SELECT"
+    "EITHER BUTTON: SELECT"
   );
 }
 
@@ -988,8 +987,7 @@ int songForGame(const char *title) {
   if (strcmp(title, "FISHING") == 0) return Music::SONG_MIDNIGHT_TRAIN;
   if (strcmp(title, "DEEP VECTOR") == 0) return Music::SONG_CAVE_ECHO;
   if (strcmp(title, "TANK") == 0) return Music::SONG_IRON_MARCH;
-  if (strcmp(title, "SPACE EVADERS") == 0 ||
-      strcmp(title, "SPACE EVADERS V2") == 0) return Music::SONG_NEON_SPRINT;
+  if (strcmp(title, "SPACE EVADERS") == 0) return Music::SONG_NEON_SPRINT;
   if (strcmp(title, "PONG") == 0) return Music::SONG_PIXEL_PARADE;
   if (strcmp(title, "DEEP HOOK") == 0) return Music::SONG_SUNSET_BOSSA;
   if (strcmp(title, "ODD STRIDE") == 0) return Music::SONG_DUST_ROAD;
@@ -1071,7 +1069,7 @@ void updateMainMenu() {
       display.print("/"); display.print(menuCount());
     }
   }
-  if (rightButtonPressed()) launch(selectedMenuItem);
+  if (leftButtonPressed() || rightButtonPressed()) launch(selectedMenuItem);
 }
 void setup() {
   Serial.begin(115200);
