@@ -134,7 +134,9 @@ static constexpr uint32_t READY_MS = 700;
 static constexpr uint32_t CAST_MIN_MS = 450;
 static constexpr uint32_t CAST_MAX_MS = 950;
 static constexpr uint32_t MISS_FEEDBACK_MS = 450;
+static constexpr uint32_t MISS_HOLD_MS = 90;
 static constexpr uint32_t TRANSITION_MS = 850;
+static constexpr uint32_t NET_CINCH_MS = 120;
 static constexpr uint32_t REVEAL_BEAT_MS = 1250;
 static constexpr uint32_t FINAL_SCORE_MS = 1800;
 static constexpr uint32_t WINNER_HOLD_MS = 1600;
@@ -224,6 +226,7 @@ static bool previousDynamicFrameValid = false;
 static int16_t prevNetEndY[2] = {0, 0};
 static int16_t prevNetBodyY[2] = {0, 0};
 static bool prevNetClosed[2] = {false, false};
+static int16_t prevNetMouthHalf[2] = {15, 15};
 static bool prevMissVisible[2] = {false, false};
 static bool prevTargetVisible[2] = {false, false};
 static int16_t prevTargetY[2] = {0, 0};
@@ -563,9 +566,14 @@ static void updateCast(PlayerState &p, uint32_t now) {
     p.castResolutionPending = true;
     return;
   }
+
+  // A weighted basket should not look like it is sliding down a ruler.  Use a
+  // simple ease-out curve: it falls decisively at first, then water drag makes
+  // the final approach to the selected depth settle more gently.
   const int32_t travel = p.castTargetY - (WATER_TOP + 2);
-  p.netY = (int16_t)((WATER_TOP + 2) +
-           (travel * (int32_t)elapsed) / (int32_t)p.castDurationMs);
+  const int32_t t = (int32_t)((elapsed * 1024UL) / p.castDurationMs); // 0..1023
+  const int32_t eased = (t * (2048L - t)) / 1024L;                  // 0..1024
+  p.netY = (int16_t)((WATER_TOP + 2) + (travel * eased) / 1024L);
 }
 
 static int16_t fishVisualWidth(const Fish &f) {
@@ -601,6 +609,35 @@ static void finishMiss(PlayerState &p, uint8_t playerIndex, uint32_t now) {
     p.timedOut = true;
   }
   queueTone(playerIndex == 0 ? BUZZER_2_PIN : BUZZER_1_PIN, 180, 80);
+}
+
+static void updateMissReturn(PlayerState &p, uint32_t now) {
+  if (!p.hasMissMessage || p.secured) return;
+
+  if ((int32_t)(now - p.feedbackUntil) >= 0) {
+    p.hasMissMessage = false;
+    p.netY = WATER_TOP + 2;
+    return;
+  }
+
+  const uint32_t startedAt = p.feedbackUntil - MISS_FEEDBACK_MS;
+  const uint32_t elapsed = now - startedAt;
+  if (elapsed <= MISS_HOLD_MS) {
+    p.netY = p.castTargetY;
+    return;
+  }
+
+  const uint32_t returnDuration = MISS_FEEDBACK_MS - MISS_HOLD_MS;
+  uint32_t returnElapsed = elapsed - MISS_HOLD_MS;
+  if (returnElapsed > returnDuration) returnElapsed = returnDuration;
+
+  // Smoothstep makes the recovery feel like a winch taking up slack, then
+  // pulling steadily before easing the basket into its parked position.
+  const int32_t t = (int32_t)((returnElapsed * 1024UL) / returnDuration);
+  const int32_t t2 = (t * t) / 1024L;
+  const int32_t smooth = (t2 * (3072L - 2L * t)) / 1024L;
+  const int32_t travel = p.castTargetY - (WATER_TOP + 2);
+  p.netY = (int16_t)(p.castTargetY - (travel * smooth) / 1024L);
 }
 
 static void secureCatch(PlayerState &p, uint8_t playerIndex, uint32_t now,
@@ -867,42 +904,113 @@ static void drawFishSilhouette(const Fish &f) {
 static void drawPlayerTarget(uint8_t playerIndex) {
   const PlayerState &p = players[playerIndex];
   if (p.secured) return;
+
   const int16_t x = playerIndex == 0 ? P1_NET_X : P2_NET_X;
+  const uint16_t accent = playerIndex == 0 ? C_P1 : C_P2;
   const uint16_t dim = playerIndex == 0 ? C_P1_DIM : C_P2_DIM;
-  display.drawFastHLine(x - 14, p.targetY, 29, dim);
-  display.drawFastVLine(x, p.targetY - 3, 7, dim);
+  const int16_t halfW = NET_CAPTURE_HALF_WIDTH;
+  const int16_t halfH = NET_CAPTURE_HALF_HEIGHT;
+  const int16_t arm = 6;
+
+  // Show the actual catch footprint rather than a tiny center cross.  Four
+  // bright brackets make the depth readable even when a dark fish passes over
+  // the marker, while the dim center line keeps precise vertical aiming easy.
+  display.drawFastHLine(x - halfW, p.targetY - halfH, arm, accent);
+  display.drawFastVLine(x - halfW, p.targetY - halfH, arm, accent);
+  display.drawFastHLine(x + halfW - arm + 1, p.targetY - halfH, arm, accent);
+  display.drawFastVLine(x + halfW, p.targetY - halfH, arm, accent);
+  display.drawFastHLine(x - halfW, p.targetY + halfH, arm, accent);
+  display.drawFastVLine(x - halfW, p.targetY + halfH - arm + 1, arm, accent);
+  display.drawFastHLine(x + halfW - arm + 1, p.targetY + halfH, arm, accent);
+  display.drawFastVLine(x + halfW, p.targetY + halfH - arm + 1, arm, accent);
+
+  display.drawFastHLine(x - 8, p.targetY, 17, dim);
+  display.drawFastVLine(x, p.targetY - 5, 11, dim);
+
+  // White center diamond is deliberately neutral so both player colors retain
+  // strong contrast in every water-depth band.
+  display.drawLine(x, p.targetY - 3, x + 3, p.targetY, ST77XX_WHITE);
+  display.drawLine(x + 3, p.targetY, x, p.targetY + 3, ST77XX_WHITE);
+  display.drawLine(x, p.targetY + 3, x - 3, p.targetY, ST77XX_WHITE);
+  display.drawLine(x - 3, p.targetY, x, p.targetY - 3, ST77XX_WHITE);
 }
 
-static void drawNetShape(int16_t x, int16_t y, uint16_t color, bool closed) {
-  const int16_t topHalf = closed ? 6 : 11;
-  const int16_t bottomHalf = closed ? 4 : 8;
-  display.drawLine(x - topHalf, y - 4, x - bottomHalf, y + 7, color);
-  display.drawLine(x + topHalf, y - 4, x + bottomHalf, y + 7, color);
-  display.drawLine(x - topHalf, y - 4, x + topHalf, y - 4, color);
-  display.drawLine(x - bottomHalf, y + 7, x + bottomHalf, y + 7, color);
-  display.drawLine(x - 5, y - 2, x + 4, y + 6, color);
-  display.drawLine(x + 5, y - 2, x - 4, y + 6, color);
-  display.fillCircle(x - bottomHalf, y + 8, 1, color);
-  display.fillCircle(x + bottomHalf, y + 8, 1, color);
+static int16_t netOpenHalfWidth(const PlayerState &p, uint32_t now) {
+  if (p.secured || state == STATE_TRANSITION) return 5;
+  if (!p.castActive) return 15;
+  if (!p.castDurationMs) return 15;
+
+  uint32_t elapsed = now - p.castStartedAt;
+  if (elapsed > p.castDurationMs) elapsed = p.castDurationMs;
+
+  // The mouth begins tucked beneath the cable, then spreads as the weighted
+  // bag sinks.  It reaches full capture width for the final third of the drop.
+  const uint32_t openMs = (p.castDurationMs * 2U) / 3U;
+  if (elapsed >= openMs || openMs == 0U) return 17;
+  return (int16_t)(7 + (10L * (int32_t)elapsed) / (int32_t)openMs);
+}
+
+static void drawNetShape(int16_t x, int16_t y, uint16_t color,
+                         int16_t mouthHalf, bool closed) {
+  const int16_t mouthY = y - 7;
+  const int16_t bridleY = y - 12;
+  const int16_t bottomY = y + 10;
+  const int16_t bottomHalf = closed ? 2 : 5;
+
+  // Bridle: cable load splits into the two sides of the basket mouth.
+  display.drawLine(x, bridleY, x - mouthHalf, mouthY, color);
+  display.drawLine(x, bridleY, x + mouthHalf, mouthY, color);
+
+  // Heavy top rim gives the opening a readable silhouette against moving fish.
+  display.drawFastHLine(x - mouthHalf, mouthY, mouthHalf * 2 + 1, color);
+  display.drawFastHLine(x - mouthHalf + 2, mouthY + 1, mouthHalf * 2 - 3, color);
+
+  // Tapered hanging bag.
+  display.drawLine(x - mouthHalf, mouthY, x - bottomHalf, bottomY, color);
+  display.drawLine(x + mouthHalf, mouthY, x + bottomHalf, bottomY, color);
+  display.drawFastHLine(x - bottomHalf, bottomY, bottomHalf * 2 + 1, color);
+
+  if (closed) {
+    // A caught net cinches into a narrow, unmistakable bundle.
+    display.drawLine(x - mouthHalf, mouthY + 1, x + bottomHalf, bottomY - 1, color);
+    display.drawLine(x + mouthHalf, mouthY + 1, x - bottomHalf, bottomY - 1, color);
+    display.fillCircle(x, bottomY, 2, color);
+  } else {
+    // Sparse mesh keeps the basket legible without becoming a solid block.
+    display.drawLine(x - mouthHalf / 2, mouthY + 1, x - 2, bottomY - 1, color);
+    display.drawLine(x + mouthHalf / 2, mouthY + 1, x + 2, bottomY - 1, color);
+    display.drawLine(x - mouthHalf + 3, mouthY + 4, x + bottomHalf, bottomY - 2, color);
+    display.drawLine(x + mouthHalf - 3, mouthY + 4, x - bottomHalf, bottomY - 2, color);
+    display.drawFastHLine(x - 7, y + 2, 15, color);
+
+    // Small bottom weights sell the sense that the net is being pulled downward.
+    display.fillCircle(x - bottomHalf, bottomY + 1, 1, color);
+    display.fillCircle(x + bottomHalf, bottomY + 1, 1, color);
+  }
 }
 
 static void drawNet(uint8_t playerIndex, uint32_t now) {
   PlayerState &p = players[playerIndex];
   const int16_t x = playerIndex == 0 ? P1_NET_X : P2_NET_X;
   const uint16_t color = playerIndex == 0 ? C_P1 : C_P2;
+  const bool deployed = p.castActive || p.secured ||
+                        (p.hasMissMessage && (int32_t)(p.feedbackUntil - now) > 0) ||
+                        state == STATE_TRANSITION;
+  const int16_t bodyY = deployed ? p.netY : (WATER_TOP + 15);
+  const int16_t cableEndY = bodyY - 12;
+  const int16_t mouthHalf = deployed ? netOpenHalfWidth(p, now) : 15;
+  const bool closed = p.secured || state == STATE_TRANSITION;
 
-  if (p.castActive || p.secured || (p.hasMissMessage && (int32_t)(p.feedbackUntil - now) > 0) || state == STATE_TRANSITION) {
-    display.drawFastVLine(x, WATER_TOP, clamp16((int16_t)(p.netY - WATER_TOP), 1, SCREEN_H - WATER_TOP), color);
-    drawNetShape(x, p.netY, color, p.secured);
-  } else {
-    display.drawFastVLine(x, WATER_TOP, 12, color);
-    drawNetShape(x, WATER_TOP + 14, color, false);
-  }
+  display.drawFastVLine(x, WATER_TOP,
+                        clamp16((int16_t)(cableEndY - WATER_TOP + 1), 1,
+                                SCREEN_H - WATER_TOP),
+                        color);
+  drawNetShape(x, bodyY, color, mouthHalf, closed);
 
   if (p.hasMissMessage && (int32_t)(p.feedbackUntil - now) > 0) {
     display.setTextSize(1);
     display.setTextColor(C_WARNING);
-    display.setCursor(x - 12, clamp16((int16_t)(p.netY + 14), WATER_TOP + 4, 306));
+    display.setCursor(x - 12, clamp16((int16_t)(p.netY + 15), WATER_TOP + 4, 306));
     display.print("MISS");
   }
 }
@@ -1212,11 +1320,12 @@ static bool netUsesDeployedVisual(const PlayerState &p, uint32_t now) {
 }
 
 static int16_t netBodyVisualY(const PlayerState &p, uint32_t now) {
-  return netUsesDeployedVisual(p, now) ? p.netY : (WATER_TOP + 14);
+  return netUsesDeployedVisual(p, now) ? p.netY : (WATER_TOP + 15);
 }
 
 static int16_t netCableEndVisualY(const PlayerState &p, uint32_t now) {
-  return netUsesDeployedVisual(p, now) ? p.netY : (WATER_TOP + 12);
+  const int16_t bodyY = netBodyVisualY(p, now);
+  return clamp16((int16_t)(bodyY - 12), WATER_TOP, SCREEN_H - 1);
 }
 
 // -----------------------------------------------------------------------------
@@ -1425,16 +1534,23 @@ static void collectDynamicDamage(uint32_t now) {
     const int16_t x = p == 0 ? P1_NET_X : P2_NET_X;
     const bool targetVisible = !players[p].secured;
     if (prevTargetVisible[p] && (!targetVisible || prevTargetY[p] != players[p].targetY)) {
-      addFishDirty({(int16_t)(x - 16), (int16_t)(prevTargetY[p] - 6), 33, 13});
+      addFishDirty({(int16_t)(x - NET_CAPTURE_HALF_WIDTH - 2),
+                    (int16_t)(prevTargetY[p] - NET_CAPTURE_HALF_HEIGHT - 2),
+                    (int16_t)(NET_CAPTURE_HALF_WIDTH * 2 + 5),
+                    (int16_t)(NET_CAPTURE_HALF_HEIGHT * 2 + 5)});
     }
 
     const int16_t currentBodyY = netBodyVisualY(players[p], now);
     const int16_t currentEndY = netCableEndVisualY(players[p], now);
-    const bool currentClosed = players[p].secured;
+    const bool currentClosed = players[p].secured || state == STATE_TRANSITION;
+    const int16_t currentMouthHalf = netUsesDeployedVisual(players[p], now) ?
+                                      netOpenHalfWidth(players[p], now) : 15;
     const bool currentMiss = netMissVisible(players[p], now);
 
-    if (prevNetBodyY[p] != currentBodyY || prevNetClosed[p] != currentClosed) {
-      addFishDirty({(int16_t)(x - 15), (int16_t)(prevNetBodyY[p] - 7), 31, 28});
+    if (prevNetBodyY[p] != currentBodyY || prevNetClosed[p] != currentClosed ||
+        prevNetMouthHalf[p] != currentMouthHalf) {
+      // Covers the widest opening, bridle, mesh bag, and bottom weights.
+      addFishDirty({(int16_t)(x - 20), (int16_t)(prevNetBodyY[p] - 14), 41, 28});
     }
 
     if (prevNetEndY[p] > currentEndY) {
@@ -1457,7 +1573,9 @@ static void snapshotDynamicFrame(uint32_t now) {
     prevPlayers[p] = players[p];
     prevNetEndY[p] = netCableEndVisualY(players[p], now);
     prevNetBodyY[p] = netBodyVisualY(players[p], now);
-    prevNetClosed[p] = players[p].secured;
+    prevNetClosed[p] = players[p].secured || state == STATE_TRANSITION;
+    prevNetMouthHalf[p] = netUsesDeployedVisual(players[p], now) ?
+                          netOpenHalfWidth(players[p], now) : 15;
     prevMissVisible[p] = netMissVisible(players[p], now);
     prevTargetVisible[p] = !players[p].secured;
     prevTargetY[p] = players[p].targetY;
@@ -1798,12 +1916,7 @@ static void updateFishing(const GameInput &input, uint32_t now, uint32_t dtMs) {
   resolveBothCastsIfReady(now);
   maintainFishPopulation(now);
 
-  for (uint8_t i = 0; i < 2; ++i) {
-    if (players[i].hasMissMessage && (int32_t)(now - players[i].feedbackUntil) >= 0) {
-      players[i].hasMissMessage = false;
-      players[i].netY = WATER_TOP + 2;
-    }
-  }
+  for (uint8_t i = 0; i < 2; ++i) updateMissReturn(players[i], now);
 
   if (players[0].secured && players[1].secured) beginTransition(now);
 }
@@ -1825,10 +1938,24 @@ static void updateTransition(uint32_t now) {
     beginReveal(now);
     return;
   }
+
+  // Hold for a beat so the player can see the basket cinch around the catch,
+  // then haul the closed bag upward with a smooth winch curve.
+  if (elapsed <= NET_CINCH_MS) {
+    for (uint8_t i = 0; i < 2; ++i) players[i].netY = players[i].transitionFromY;
+    return;
+  }
+
+  const uint32_t haulDuration = TRANSITION_MS - NET_CINCH_MS;
+  const uint32_t haulElapsed = elapsed - NET_CINCH_MS;
+  const int32_t t = (int32_t)((haulElapsed * 1024UL) / haulDuration);
+  const int32_t t2 = (t * t) / 1024L;
+  const int32_t smooth = (t2 * (3072L - 2L * t)) / 1024L;
+
   for (uint8_t i = 0; i < 2; ++i) {
     const int32_t travel = players[i].transitionFromY - (WATER_TOP + 2);
     players[i].netY = (int16_t)(players[i].transitionFromY -
-                      (travel * (int32_t)elapsed) / (int32_t)TRANSITION_MS);
+                      (travel * smooth) / 1024L);
   }
 }
 
