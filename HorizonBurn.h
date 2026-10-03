@@ -853,6 +853,15 @@ static inline ProjectedNote projectActive(const ActiveNote& n,int64_t visualSong
   int16_t hh=(n.requiredMask==BOTH_GUNS?8:7);
   hw=(int16_t)((hw*p.scaleQ8+255)/256 + 6);
   hh=(int16_t)((hh*p.scaleQ8+255)/256 + 7);
+
+  // The timing cue bracket reaches x +/-19 and y +/-8 from the note center.
+  // Keep the dirty bounds large enough for the entire cue at every scale so
+  // purple/white bracket pixels cannot be left behind as the note moves.
+  if(n.status!=NoteStatus::Flyby && n.status!=NoteStatus::DualBroken){
+    if(hw<20) hw=20;
+    if(hh<9) hh=9;
+  }
+
   p.bounds={ (int16_t)(p.x-hw),(int16_t)(p.y-hh),(int16_t)(2*hw+1),(int16_t)(2*hh+1)};
   return p;
 }
@@ -866,7 +875,10 @@ static inline uint8_t multiplierFor(uint32_t combo) {
 }
 static inline uint16_t accuracyPermille(const RunStats& s) {
   if(!s.resolved) return 0;
-  uint32_t num=1000UL*s.perfect + 600UL*s.good;
+  // Accuracy is hit rate: Perfect and Good are both successful hits.
+  // Only resolved misses reduce the percentage; extra shots are tracked separately.
+  uint32_t hits=(uint32_t)s.perfect + (uint32_t)s.good;
+  uint32_t num=1000UL*hits;
   return (uint16_t)((num + s.resolved/2)/s.resolved);
 }
 
@@ -1321,6 +1333,24 @@ static inline void textLocal(StripCanvas& c,const char* s,Rect r,uint8_t align,u
   int16_t y=r.y;for(size_t i=0;s[i]&&x<r.x+r.w;i++,x+=6*scale)glyphLocal(c,s[i],x,y,scale,color);
 }
 
+// 8x11 nearest-neighbor version of the 5x7 font. This sits between scale 1
+// and scale 2, which is useful for the tight second row of the gameplay HUD.
+static inline void glyphLocalHud(StripCanvas& c,char ch,int16_t x,int16_t y,uint16_t color){
+  const uint8_t* g=glyphFor(ch);
+  for(uint8_t ty=0;ty<11;ty++){
+    uint8_t row=(uint8_t)((ty*7U)/11U);
+    for(uint8_t tx=0;tx<8;tx++){
+      uint8_t col=(uint8_t)((tx*5U)/8U);
+      if(g[col]&(1U<<row)) plot(c,(int16_t)(x+tx),(int16_t)(y+ty),color);
+    }
+  }
+}
+static inline int16_t hudTextWidth(const char* s){return (int16_t)(strlen(s)*9-(strlen(s)?1:0));}
+static inline void textLocalHud(StripCanvas& c,const char* s,Rect r,uint8_t align,uint16_t color){
+  int16_t w=hudTextWidth(s),x=r.x;if(align==1)x=r.x+(r.w-w)/2;else if(align==2)x=r.x+r.w-w;
+  int16_t y=r.y;for(size_t i=0;s[i]&&x<r.x+r.w;i++,x+=9)glyphLocalHud(c,s[i],x,y,color);
+}
+
 // ============================================================
 // SCENE ART
 // ============================================================
@@ -1472,52 +1502,54 @@ static inline void drawEffects(StripCanvas& c,const RenderSnapshot& s,bool foreg
 static inline const char* feedbackText(FeedbackKind f){switch(f){case FeedbackKind::Perfect:return "PERFECT";case FeedbackKind::GoodEarly:return "GOOD EARLY";case FeedbackKind::GoodLate:return "GOOD LATE";case FeedbackKind::Miss:return "MISS";case FeedbackKind::Extra:return "EXTRA";default:return "";}}
 
 static inline void drawHUD(StripCanvas& c,const RenderSnapshot& s){
-  fillRectLocal(c,{0,0,240,32},C_DEEP_VOID);char buf[32];snprintf(buf,sizeof(buf),"%lu",(unsigned long)s.score);textLocal(c,buf,{8,2,112,16},2,2,C_HIGHLIGHT);
-  snprintf(buf,sizeof(buf),"X%u",s.multiplier);textLocal(c,buf,{126,2,40,16},1,2,s.multiplier>1?C_PINK:C_CYAN);
+  fillRectLocal(c,{0,0,240,32},C_DEEP_VOID);char buf[32];snprintf(buf,sizeof(buf),"%lu",(unsigned long)s.score);textLocal(c,buf,{8,1,112,14},2,2,C_HIGHLIGHT);
+  snprintf(buf,sizeof(buf),"X%u",s.multiplier);textLocal(c,buf,{126,1,40,14},1,2,s.multiplier>1?C_PINK:C_CYAN);
   for(uint8_t i=0;i<3;i++){int16_t x=193+i*16;uint16_t col=i<s.lives?C_PINK:C_DIM_MESH;lineLocal(c,{x,6},{(int16_t)(x+4),10},col);lineLocal(c,{(int16_t)(x+4),10},{x,14},col);lineLocal(c,{x,14},{(int16_t)(x-4),10},col);lineLocal(c,{(int16_t)(x-4),10},{x,6},col);}
-  snprintf(buf,sizeof(buf),"COMBO %lu",(unsigned long)s.combo);textLocal(c,buf,{8,22,122,8},0,1,C_CYAN);textLocal(c,DIFFS[(uint8_t)s.difficulty].name,{144,22,88,8},2,1,C_HIGHLIGHT);
+  // The second HUD row uses an intermediate 8x11 font: still larger than
+  // the original scale-1 labels, but short enough to stay clear of the divider.
+  snprintf(buf,sizeof(buf),"COMBO %lu",(unsigned long)s.combo);textLocalHud(c,buf,{8,17,122,11},0,C_CYAN);textLocalHud(c,DIFFS[(uint8_t)s.difficulty].name,{144,17,88,11},2,C_HIGHLIGHT);
   hspan(c,8,231,31,C_DIM_MESH);if(s.progressPx>0)hspan(c,8,(int16_t)(8+s.progressPx),31,C_PINK);
 }
 
 static inline void drawFooter(StripCanvas& c){fillRectLocal(c,{0,308,240,12},C_DEEP_VOID);}
 
 static inline void drawTitle(StripCanvas& c,const RenderSnapshot& s){
-  drawSkySun(c);drawMountains(c);drawGround(c,s);textLocal(c,"HORIZON",{0,126,240,24},1,3,C_CYAN);textLocal(c,"BURN",{0,154,240,24},1,3,C_PINK);
-  drawSignatureShip(c,120,246);textLocal(c,"PRESS TO START",{0,294,240,8},1,1,C_HIGHLIGHT);drawFooter(c);
+  drawSkySun(c);drawMountains(c);drawGround(c,s);textLocal(c,"HORIZON",{0,118,240,30},1,4,C_CYAN);textLocal(c,"BURN",{0,151,240,30},1,4,C_PINK);
+  drawSignatureShip(c,120,246);textLocal(c,"PRESS TO START",{0,287,240,16},1,2,C_HIGHLIGHT);drawFooter(c);
 }
 
 static inline void drawDifficulty(StripCanvas& c,const RenderSnapshot& s){
-  drawSkySun(c);drawMountains(c);textLocal(c,"DIFFICULTY",{0,106,240,16},1,2,C_HIGHLIGHT);
+  drawSkySun(c);drawMountains(c);textLocal(c,"DIFFICULTY",{0,100,240,22},1,3,C_HIGHLIGHT);
   for(uint8_t i=0;i<5;i++){
-    int16_t y=132+i*22;
+    int16_t y=126+i*24;
     if(i==s.selectedDifficulty){
-      fillRectLocal(c,{24,y,192,18},C_PANEL);
-      hspan(c,24,215,y,C_CYAN);
-      hspan(c,24,215,(int16_t)(y+17),C_CYAN);
+      fillRectLocal(c,{20,y,200,22},C_PANEL);
+      hspan(c,20,219,y,C_CYAN);
+      hspan(c,20,219,(int16_t)(y+21),C_CYAN);
     }
-    textLocal(c,DIFFS[i].name,{24,(int16_t)(y+5),192,8},1,1,
+    textLocal(c,DIFFS[i].name,{20,(int16_t)(y+4),200,14},1,2,
               i==s.selectedDifficulty?C_HIGHLIGHT:C_VIOLET_GLOW);
   }
-  textLocal(c,DIFFS[s.selectedDifficulty].songName,{0,253,240,8},1,1,C_HIGHLIGHT);
+  textLocal(c,DIFFS[s.selectedDifficulty].songName,{0,248,240,14},1,2,C_HIGHLIGHT);
 
   // Bottom navigation buttons: left button goes back, right button starts play.
-  const Rect backBtn{10,280,96,22};
-  const Rect playBtn{134,280,96,22};
+  const Rect backBtn{8,277,100,27};
+  const Rect playBtn{132,277,100,27};
   fillRectLocal(c,backBtn,C_PANEL);
   hspan(c,backBtn.x,(int16_t)(backBtn.x+backBtn.w-1),backBtn.y,C_CYAN);
   hspan(c,backBtn.x,(int16_t)(backBtn.x+backBtn.w-1),(int16_t)(backBtn.y+backBtn.h-1),C_CYAN);
   lineLocal(c,{backBtn.x,backBtn.y},{backBtn.x,(int16_t)(backBtn.y+backBtn.h-1)},C_CYAN);
   lineLocal(c,{(int16_t)(backBtn.x+backBtn.w-1),backBtn.y},{(int16_t)(backBtn.x+backBtn.w-1),(int16_t)(backBtn.y+backBtn.h-1)},C_CYAN);
-  triangleLocal(c,{18,291},{25,285},{25,297},C_CYAN);
-  textLocal(c,"BACK",{28,287,70,8},1,1,C_HIGHLIGHT);
+  triangleLocal(c,{16,290},{24,283},{24,297},C_CYAN);
+  textLocal(c,"BACK",{28,284,70,14},1,2,C_HIGHLIGHT);
 
   fillRectLocal(c,playBtn,C_PANEL);
   hspan(c,playBtn.x,(int16_t)(playBtn.x+playBtn.w-1),playBtn.y,C_PINK);
   hspan(c,playBtn.x,(int16_t)(playBtn.x+playBtn.w-1),(int16_t)(playBtn.y+playBtn.h-1),C_PINK);
   lineLocal(c,{playBtn.x,playBtn.y},{playBtn.x,(int16_t)(playBtn.y+playBtn.h-1)},C_PINK);
   lineLocal(c,{(int16_t)(playBtn.x+playBtn.w-1),playBtn.y},{(int16_t)(playBtn.x+playBtn.w-1),(int16_t)(playBtn.y+playBtn.h-1)},C_PINK);
-  textLocal(c,"PLAY",{142,287,66,8},1,1,C_HIGHLIGHT);
-  triangleLocal(c,{222,291},{215,285},{215,297},C_PINK);
+  textLocal(c,"PLAY",{142,284,66,14},1,2,C_HIGHLIGHT);
+  triangleLocal(c,{224,290},{216,283},{216,297},C_PINK);
   drawFooter(c);
 }
 
@@ -1527,38 +1559,49 @@ static inline void drawGameplayScene(StripCanvas& c,const RenderSnapshot& s){
   drawEffects(c,s,false);drawPlayer(c,s);
   for(uint8_t i=0;i<s.noteCount;i++)if(s.notes[i].foreground)drawEnemy(c,s.notes[i]);
   drawEffects(c,s,true);drawHUD(c,s);
-  if(s.phase==Phase::CountIn && s.countdown>0){char b[6];snprintf(b,sizeof(b),"%d",(int)s.countdown);fillRectLocal(c,{102,153,36,32},C_PANEL);textLocal(c,b,{102,157,36,21},1,3,C_HIGHLIGHT);}
-  const char* ft=feedbackText(s.feedback);if(ft[0]){fillRectLocal(c,{38,294,164,10},C_DEEP_VOID);textLocal(c,ft,{38,295,164,8},1,1,s.feedback==FeedbackKind::Miss?C_MISS:(s.feedback==FeedbackKind::Perfect?C_HIGHLIGHT:C_PINK));}
-  if(s.phase==Phase::FailFlyby)textLocal(c,"SYSTEM BURNOUT",{0,145,240,16},1,2,C_MISS);
-  if(s.phase==Phase::ClearOutro)textLocal(c,"TRACK CLEAR",{0,145,240,16},1,2,C_HIGHLIGHT);
+  if(s.phase==Phase::CountIn && s.countdown>0){char b[6];snprintf(b,sizeof(b),"%d",(int)s.countdown);fillRectLocal(c,{98,149,44,38},C_PANEL);textLocal(c,b,{98,154,44,28},1,4,C_HIGHLIGHT);}
+  const char* ft=feedbackText(s.feedback);if(ft[0]){fillRectLocal(c,{28,287,184,18},C_DEEP_VOID);textLocal(c,ft,{28,289,184,14},1,2,s.feedback==FeedbackKind::Miss?C_MISS:(s.feedback==FeedbackKind::Perfect?C_HIGHLIGHT:C_PINK));}
+  if(s.phase==Phase::FailFlyby)textLocal(c,"SYSTEM BURNOUT",{0,142,240,18},1,2,C_MISS);
+  if(s.phase==Phase::ClearOutro)textLocal(c,"TRACK CLEAR",{0,140,240,22},1,3,C_HIGHLIGHT);
   drawFooter(c);
 }
 
 static inline void drawResults(StripCanvas& c,const RenderSnapshot& s){
-  drawSkySun(c);textLocal(c,s.result==ResultReason::Cleared?"TRACK CLEAR":"RUN OVER",{0,44,240,16},1,2,s.result==ResultReason::Cleared?C_HIGHLIGHT:C_MISS);char b[32];snprintf(b,sizeof(b),"%lu",(unsigned long)s.score);textLocal(c,b,{8,78,224,24},1,3,C_PINK);textLocal(c,DIFFS[(uint8_t)s.difficulty].name,{0,108,240,8},1,1,C_CYAN);
-  fillRectLocal(c,{16,122,208,148},C_PANEL);snprintf(b,sizeof(b),"MAX COMBO %lu",(unsigned long)s.maxCombo);textLocal(c,b,{28,136,184,8},0,1,C_HIGHLIGHT);snprintf(b,sizeof(b),"ACCURACY %u.%u%%",s.accuracyPermille/10,s.accuracyPermille%10);textLocal(c,b,{28,158,184,8},0,1,C_HIGHLIGHT);snprintf(b,sizeof(b),"PERFECT %u",s.perfect);textLocal(c,b,{28,182,184,8},0,1,C_CYAN);snprintf(b,sizeof(b),"GOOD %u",s.good);textLocal(c,b,{28,202,184,8},0,1,C_PINK);snprintf(b,sizeof(b),"MISSES %u",s.missed);textLocal(c,b,{28,222,184,8},0,1,C_MISS);snprintf(b,sizeof(b),"EXTRA SHOTS %u",s.extras);textLocal(c,b,{28,242,184,8},0,1,C_VIOLET_GLOW);
+  drawSkySun(c);
+  textLocal(c,s.result==ResultReason::Cleared?"TRACK CLEAR":"RUN OVER",{0,32,240,22},1,3,s.result==ResultReason::Cleared?C_HIGHLIGHT:C_MISS);
+  char b[32];
+  snprintf(b,sizeof(b),"%lu",(unsigned long)s.score);textLocal(c,b,{8,65,224,30},1,4,C_PINK);
+  textLocal(c,DIFFS[(uint8_t)s.difficulty].name,{0,103,240,14},1,2,C_CYAN);
+
+  fillRectLocal(c,{12,122,216,145},C_PANEL);
+  snprintf(b,sizeof(b),"MAX COMBO %lu",(unsigned long)s.maxCombo);textLocal(c,b,{20,130,200,14},0,2,C_HIGHLIGHT);
+  snprintf(b,sizeof(b),"ACCURACY %u.%u%%",s.accuracyPermille/10,s.accuracyPermille%10);textLocal(c,b,{20,153,200,14},0,2,C_HIGHLIGHT);
+  snprintf(b,sizeof(b),"PERFECT %u",s.perfect);textLocal(c,b,{20,176,200,14},0,2,C_CYAN);
+  snprintf(b,sizeof(b),"GOOD %u",s.good);textLocal(c,b,{20,199,200,14},0,2,C_PINK);
+  snprintf(b,sizeof(b),"MISSES %u",s.missed);textLocal(c,b,{20,222,200,14},0,2,C_MISS);
+  snprintf(b,sizeof(b),"EXTRA SHOTS %u",s.extras);textLocal(c,b,{20,245,200,14},0,2,C_VIOLET_GLOW);
 
   // Match the difficulty screen navigation: left button goes back, right button plays again.
-  const Rect backBtn{10,280,96,22};
-  const Rect playBtn{134,280,96,22};
+  const Rect backBtn{8,277,100,27};
+  const Rect playBtn{132,277,100,27};
   fillRectLocal(c,backBtn,C_PANEL);
   hspan(c,backBtn.x,(int16_t)(backBtn.x+backBtn.w-1),backBtn.y,C_CYAN);
   hspan(c,backBtn.x,(int16_t)(backBtn.x+backBtn.w-1),(int16_t)(backBtn.y+backBtn.h-1),C_CYAN);
   lineLocal(c,{backBtn.x,backBtn.y},{backBtn.x,(int16_t)(backBtn.y+backBtn.h-1)},C_CYAN);
   lineLocal(c,{(int16_t)(backBtn.x+backBtn.w-1),backBtn.y},{(int16_t)(backBtn.x+backBtn.w-1),(int16_t)(backBtn.y+backBtn.h-1)},C_CYAN);
-  triangleLocal(c,{18,291},{25,285},{25,297},C_CYAN);
-  textLocal(c,"BACK",{28,287,70,8},1,1,C_HIGHLIGHT);
+  triangleLocal(c,{16,290},{24,283},{24,297},C_CYAN);
+  textLocal(c,"BACK",{28,284,70,14},1,2,C_HIGHLIGHT);
 
   fillRectLocal(c,playBtn,C_PANEL);
   hspan(c,playBtn.x,(int16_t)(playBtn.x+playBtn.w-1),playBtn.y,C_PINK);
   hspan(c,playBtn.x,(int16_t)(playBtn.x+playBtn.w-1),(int16_t)(playBtn.y+playBtn.h-1),C_PINK);
   lineLocal(c,{playBtn.x,playBtn.y},{playBtn.x,(int16_t)(playBtn.y+playBtn.h-1)},C_PINK);
   lineLocal(c,{(int16_t)(playBtn.x+playBtn.w-1),playBtn.y},{(int16_t)(playBtn.x+playBtn.w-1),(int16_t)(playBtn.y+playBtn.h-1)},C_PINK);
-  textLocal(c,"PLAY",{142,287,66,8},1,1,C_HIGHLIGHT);
-  triangleLocal(c,{222,291},{215,285},{215,297},C_PINK);
+  textLocal(c,"PLAY",{142,284,66,14},1,2,C_HIGHLIGHT);
+  triangleLocal(c,{224,290},{216,283},{216,297},C_PINK);
   drawFooter(c);
 }
-static inline void drawFault(StripCanvas& c,const RenderSnapshot& s){fillRectLocal(c,{0,0,240,320},C_DEEP_VOID);textLocal(c,"CANNOT START",{0,104,240,16},1,2,C_MISS);const char* r=s.result==ResultReason::PoolOverflow?"NOTE POOL FULL":"CHART ERROR";textLocal(c,r,{0,145,240,8},1,1,C_HIGHLIGHT);drawFooter(c);}
+static inline void drawFault(StripCanvas& c,const RenderSnapshot& s){fillRectLocal(c,{0,0,240,320},C_DEEP_VOID);textLocal(c,"CANNOT START",{0,96,240,22},1,3,C_MISS);const char* r=s.result==ResultReason::PoolOverflow?"NOTE POOL FULL":"CHART ERROR";textLocal(c,r,{0,142,240,14},1,2,C_HIGHLIGHT);drawFooter(c);}
 
 static inline void composeRegion(const RenderSnapshot& s,Rect r,uint16_t* dst){StripCanvas c{dst,r,r.w};drawBackgroundRows(c);switch(s.phase){case Phase::Title:drawTitle(c,s);break;case Phase::Difficulty:drawDifficulty(c,s);break;case Phase::Ready:case Phase::CountIn:case Phase::Playing:case Phase::FailFlyby:case Phase::ClearOutro:drawGameplayScene(c,s);break;case Phase::Results:drawResults(c,s);break;case Phase::Fault:drawFault(c,s);break;}}
 
@@ -1591,6 +1634,13 @@ static inline void captureRenderSnapshot(RenderSnapshot& s,uint64_t now,int64_t 
 }
 
 static inline const ProjectedNote* findProjected(const RenderSnapshot& s,uint16_t seq){for(uint8_t i=0;i<s.noteCount;i++)if(s.notes[i].sequence==seq)return &s.notes[i];return nullptr;}
+static inline uint8_t noteCueState(const ProjectedNote& n){
+  if(n.status==NoteStatus::Flyby || n.status==NoteStatus::DualBroken) return 0;
+  int32_t ae=n.timingErrorUs<0?-n.timingErrorUs:n.timingErrorUs;
+  if(ae<=(int32_t)cfg().perfectUs) return 2;
+  if(ae<=(int32_t)cfg().goodUs) return 1;
+  return 0;
+}
 static inline const EffectVisual* findEffectVisual(const RenderSnapshot& s,uint16_t id){for(uint8_t i=0;i<s.effectCount;i++)if(s.effects[i].id==id)return &s.effects[i];return nullptr;}
 
 static inline void collectDirty(const RenderSnapshot& old,const RenderSnapshot& next){
@@ -1605,15 +1655,15 @@ static inline void collectDirty(const RenderSnapshot& old,const RenderSnapshot& 
       if(old.lane!=Lane::Center)markDirty(laneLocatorBounds(old.lane));
       if(next.lane!=Lane::Center)markDirty(laneLocatorBounds(next.lane));
     }
-    for(uint8_t i=0;i<old.noteCount;i++){const ProjectedNote*n=findProjected(next,old.notes[i].sequence);if(!n||memcmp(&old.notes[i].bounds,&n->bounds,sizeof(Rect))||old.notes[i].status!=n->status)markDirty(old.notes[i].bounds);}
-    for(uint8_t i=0;i<next.noteCount;i++){const ProjectedNote*o=findProjected(old,next.notes[i].sequence);if(!o||memcmp(&o->bounds,&next.notes[i].bounds,sizeof(Rect))||o->status!=next.notes[i].status)markDirty(next.notes[i].bounds);}
+    for(uint8_t i=0;i<old.noteCount;i++){const ProjectedNote*n=findProjected(next,old.notes[i].sequence);if(!n||memcmp(&old.notes[i].bounds,&n->bounds,sizeof(Rect))||old.notes[i].status!=n->status||noteCueState(old.notes[i])!=noteCueState(*n))markDirty(old.notes[i].bounds);}
+    for(uint8_t i=0;i<next.noteCount;i++){const ProjectedNote*o=findProjected(old,next.notes[i].sequence);if(!o||memcmp(&o->bounds,&next.notes[i].bounds,sizeof(Rect))||o->status!=next.notes[i].status||noteCueState(*o)!=noteCueState(next.notes[i]))markDirty(next.notes[i].bounds);}
     for(uint8_t i=0;i<old.effectCount;i++){const EffectVisual*n=findEffectVisual(next,old.effects[i].id);if(!n||n->ageQ10!=old.effects[i].ageQ10)markDirty(old.effects[i].bounds);}
     for(uint8_t i=0;i<next.effectCount;i++){const EffectVisual*o=findEffectVisual(old,next.effects[i].id);if(!o||o->ageQ10!=next.effects[i].ageQ10)markDirty(next.effects[i].bounds);}
     if(old.score!=next.score) markDirty({8,2,112,16});
     if(old.combo!=next.combo||old.multiplier!=next.multiplier) markDirty({8,2,160,28});
     if(old.lives!=next.lives) markDirty({185,2,52,16});
     if(old.progressPx!=next.progressPx) markDirty({8,30,224,2});
-    if(old.feedback!=next.feedback) markDirty({38,293,164,12});
+    if(old.feedback!=next.feedback) markDirty({28,287,184,18});
     if(old.countdown!=next.countdown||old.phase!=next.phase) markDirty({20,142,200,66});
   } else if(layoutKind(next.phase)==1){if(old.selectedDifficulty!=next.selectedDifficulty)markDirty({0,128,240,140});}
   // Title, results, and fault screens have no animation. Layout changes already
