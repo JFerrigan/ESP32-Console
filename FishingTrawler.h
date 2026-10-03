@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 #include <Adafruit_ST7789.h>
+#include <stdio.h>
+#include <string.h>
 #include "GameAPI.h"
 #include "Hardware.h"
 #include "MusicPlayer.h"
@@ -25,9 +27,7 @@ enum GameState : uint8_t {
   STATE_TIMEOUT,
   STATE_TRANSITION,
   STATE_REVEAL,
-  STATE_FINAL_SCORE,
-  STATE_WINNER,
-  STATE_REPLAY_WAIT
+  STATE_FINAL_SCORE
 };
 
 enum PlayMode : uint8_t {
@@ -142,8 +142,6 @@ static constexpr uint32_t MISS_HOLD_MS = 90;
 static constexpr uint32_t TRANSITION_MS = 850;
 static constexpr uint32_t NET_CINCH_MS = 120;
 static constexpr uint32_t REVEAL_BEAT_MS = 1250;
-static constexpr uint32_t FINAL_SCORE_MS = 1800;
-static constexpr uint32_t WINNER_HOLD_MS = 1600;
 static constexpr uint32_t FISH_REFILL_MS = 550;
 static constexpr uint32_t RENDER_INTERVAL_US = 16667; // stable ~60 Hz visual cadence
 static constexpr uint8_t MAX_FISH_DIRTY_RECTS = 42;
@@ -218,7 +216,6 @@ static uint32_t lastFrameAt = 0;       // slower presentation screens use millis
 static uint32_t lastFrameUs = 0;       // gameplay renderer uses microseconds for even cadence
 static uint32_t lastFishRefillAt = 0;
 static uint32_t revealBeatStartedAt = 0;
-static uint32_t winnerAnimAt = 0;
 static uint8_t revealIndex = 0;
 static uint8_t lastWarningSecond = 255;
 static bool screenDirty = true;
@@ -226,7 +223,6 @@ static bool screenDirty = true;
 // can start the round. This prevents the launcher/menu press used to enter the
 // game from leaking through as either the start press or an immediate cast.
 static bool startInputArmed = false;
-static bool replayReady[2] = {false, false};
 static Fish prevFish[MAX_ACTIVE_FISH];
 static PlayerState prevPlayers[2];
 static bool previousDynamicFrameValid = false;
@@ -811,8 +807,6 @@ static void resetRound(uint32_t now) {
   clearPlayer(players[0]);
   clearPlayer(players[1]);
   for (uint8_t i = 0; i < MAX_ACTIVE_FISH; ++i) fish[i].active = false;
-  replayReady[0] = false;
-  replayReady[1] = false;
   startInputArmed = false;
   revealIndex = 0;
   revealBeatStartedAt = 0;
@@ -877,20 +871,11 @@ static uint8_t maxCatchCount() {
 }
 
 static void beginFinalScore(uint32_t now) {
+  // FINAL_SCORE is the persistent combined results screen. It remains visible
+  // until LEFT chooses Menu or RIGHT chooses Replay.
   setState(STATE_FINAL_SCORE, now);
-}
-
-static void beginWinner(uint32_t now) {
-  replayReady[0] = false;
-  replayReady[1] = false;
-  winnerAnimAt = now;
-  setState(STATE_WINNER, now);
   queueTone(BUZZER_2_PIN, 880, 120);
-  queueTone(BUZZER_1_PIN, 1040, 120);
-}
-
-static void beginReplayWait(uint32_t now) {
-  setState(STATE_REPLAY_WAIT, now);
+  if (playMode == MODE_TWO_PLAYER) queueTone(BUZZER_1_PIN, 1040, 120);
 }
 
 // -----------------------------------------------------------------------------
@@ -1879,6 +1864,21 @@ static void drawCenteredText(const char *text, int16_t y, uint8_t textSize, uint
   display.print(text);
 }
 
+static void drawCenteredTextInRect(const char *text, int16_t x, int16_t w,
+                                   int16_t y, int16_t h, uint8_t textSize,
+                                   uint16_t color) {
+  const int16_t textW = (int16_t)strlen(text) * 6 * textSize;
+  const int16_t textH = 8 * textSize;
+  int16_t cursorX = x + (w - textW) / 2;
+  int16_t cursorY = y + (h - textH) / 2;
+  if (cursorX < x) cursorX = x;
+  if (cursorY < y) cursorY = y;
+  display.setTextSize(textSize);
+  display.setTextColor(color);
+  display.setCursor(cursorX, cursorY);
+  display.print(text);
+}
+
 static void drawSpeciesArtLarge(const CatchFish &c, int16_t cx, int16_t cy) {
   const SpeciesDef &def = SPECIES[c.species];
   int16_t w = clamp16((int16_t)(32 + c.lengthTenths / 12), 44, 94);
@@ -1969,134 +1969,86 @@ static void drawRevealFrame() {
   }
 }
 
-static void drawFinalScoreFrame() {
-  display.fillScreen(C_PANEL);
+static void drawResultActionButtons() {
+  // Mirror Horizon Burn's results navigation: two compact bottom-corner boxes,
+  // cyan/left for Menu and pink/right for Replay, each with an outward arrow.
+  static constexpr int16_t BUTTON_Y = 277;
+  static constexpr int16_t BUTTON_H = 27;
+  static constexpr int16_t BUTTON_W = 100;
+  static constexpr int16_t LEFT_X = 8;
+  static constexpr int16_t RIGHT_X = 132;
+
+  display.fillRect(LEFT_X, BUTTON_Y, BUTTON_W, BUTTON_H, C_PANEL);
+  display.drawRect(LEFT_X, BUTTON_Y, BUTTON_W, BUTTON_H, C_P1);
+  display.fillTriangle(16, 290, 24, 283, 24, 297, C_P1);
   display.setTextSize(2);
   display.setTextColor(ST77XX_WHITE);
-  display.setCursor(52, 32);
-  display.print("FINAL HAUL");
+  display.setCursor(34, 284);
+  display.print("MENU");
+
+  display.fillRect(RIGHT_X, BUTTON_Y, BUTTON_W, BUTTON_H, C_PANEL);
+  display.drawRect(RIGHT_X, BUTTON_Y, BUTTON_W, BUTTON_H, C_P2);
+  display.setTextSize(2);
+  display.setTextColor(ST77XX_WHITE);
+  display.setCursor(140, 284);
+  display.print("REPLAY");
+  display.fillTriangle(224, 290, 216, 283, 216, 297, C_P2);
+}
+
+static void drawFinalScoreFrame() {
+  display.fillScreen(C_PANEL);
+  display.drawRect(5, 5, 230, 310, rgb565(59, 73, 82));
+  display.drawRect(8, 8, 224, 304, rgb565(34, 46, 55));
+
+  drawCenteredText("FINAL HAUL", 22, 2, ST77XX_WHITE);
 
   if (playMode == MODE_SINGLE_PLAYER) {
-    display.fillRect(18, 86, 204, 134, rgb565(11, 25, 34));
-    display.drawRect(18, 86, 204, 134, ST77XX_WHITE);
+    // One large neutral haul card. Keep both the money and fish count together
+    // so this one persistent screen contains the complete result.
+    display.fillRect(18, 72, 204, 142, rgb565(11, 25, 34));
+    display.drawRect(18, 72, 204, 142, ST77XX_WHITE);
+
     char line[28];
     snprintf(line, sizeof(line), "$%lu", (unsigned long)players[0].totalValue);
-    drawCenteredText(line, 125, 4, C_WARNING);
-    snprintf(line, sizeof(line), "%u fish", players[0].catchCount);
-    drawCenteredText(line, 185, 2, C_TEXT_DIM);
+    drawCenteredText(line, 108, 4, C_WARNING);
+    snprintf(line, sizeof(line), "%u FISH", players[0].catchCount);
+    drawCenteredText(line, 170, 2, ST77XX_WHITE);
+
+    drawResultActionButtons();
     return;
   }
 
-  display.fillRect(12, 86, 98, 105, rgb565(5, 31, 44));
-  display.drawRect(12, 86, 98, 105, C_P1);
-  display.fillRect(130, 86, 98, 105, rgb565(37, 12, 31));
-  display.drawRect(130, 86, 98, 105, C_P2);
-
-  display.setTextColor(C_P1);
-  display.setCursor(47, 99);
-  display.print("P1");
-  display.setTextSize(3);
-  display.setCursor(27, 135);
-  display.print('$');
-  display.print(players[0].totalValue);
-
-  display.setTextSize(2);
-  display.setTextColor(C_P2);
-  display.setCursor(165, 99);
-  display.print("P2");
-  display.setTextSize(3);
-  display.setCursor(145, 135);
-  display.print('$');
-  display.print(players[1].totalValue);
-
-  display.setTextSize(1);
-  display.setTextColor(C_TEXT_DIM);
-  display.setCursor(40, 226);
-  display.print(players[0].catchCount);
-  display.print(" fish");
-  display.setCursor(158, 226);
-  display.print(players[1].catchCount);
-  display.print(" fish");
-}
-
-static void drawWinnerFrame(uint32_t now, bool replayMode) {
-  display.fillScreen(C_PANEL);
-
-  uint16_t border = ((now / 240U) & 1U) ? C_WARNING : ST77XX_WHITE;
-  display.drawRect(5, 5, 230, 310, border);
-  display.drawRect(8, 8, 224, 304, rgb565(59, 73, 82));
-
-  if (playMode == MODE_SINGLE_PLAYER) {
-    drawCenteredText("FINAL HAUL", 42, 2, ST77XX_WHITE);
-    char line[28];
-    snprintf(line, sizeof(line), "$%lu", (unsigned long)players[0].totalValue);
-    drawCenteredText(line, 105, 4, C_WARNING);
-    snprintf(line, sizeof(line), "%u fish", players[0].catchCount);
-    drawCenteredText(line, 165, 2, C_TEXT_DIM);
-    if (replayMode) {
-      drawCenteredText("Press to Play Again", 230, 1, ST77XX_WHITE);
-      drawCenteredText("Either button", 246, 1, C_TEXT_DIM);
-    }
+  // Winner/result information now lives on the same screen as the haul cards.
+  if (players[0].totalValue > players[1].totalValue) {
+    drawCenteredText("P1 WINS", 52, 2, C_P1);
+  } else if (players[1].totalValue > players[0].totalValue) {
+    drawCenteredText("P2 WINS", 52, 2, C_P2);
   } else {
-    display.setTextSize(2);
-    display.setTextColor(ST77XX_WHITE);
-    display.setCursor(52, 42);
-    display.print("LAKE RESULT");
-
-    display.setTextSize(3);
-    if (players[0].totalValue > players[1].totalValue) {
-      display.setTextColor(C_P1);
-      display.setCursor(64, 100);
-      display.print("P1 WINS");
-    } else if (players[1].totalValue > players[0].totalValue) {
-      display.setTextColor(C_P2);
-      display.setCursor(64, 100);
-      display.print("P2 WINS");
-    } else {
-      display.setTextColor(C_WARNING);
-      display.setCursor(88, 100);
-      display.print("TIE");
-    }
-
-    display.setTextSize(2);
-    display.setTextColor(C_P1);
-    display.setCursor(36, 157);
-    display.print('$'); display.print(players[0].totalValue);
-    display.setTextColor(ST77XX_WHITE);
-    display.setCursor(107, 157);
-    display.print("-");
-    display.setTextColor(C_P2);
-    display.setCursor(143, 157);
-    display.print('$'); display.print(players[1].totalValue);
-
-    if (replayMode) {
-      display.setTextSize(1);
-      display.setTextColor(ST77XX_WHITE);
-      display.setCursor(49, 220);
-      display.print("EACH PLAYER PRESS BUTTON");
-      display.setCursor(76, 234);
-      display.print("TO PLAY AGAIN");
-
-      display.setTextColor(replayReady[0] ? C_P1 : C_TEXT_DIM);
-      display.setCursor(28, 270);
-      display.print(replayReady[0] ? "P1 READY" : "P1 WAIT");
-      display.setTextColor(replayReady[1] ? C_P2 : C_TEXT_DIM);
-      display.setCursor(154, 270);
-      display.print(replayReady[1] ? "P2 READY" : "P2 WAIT");
-    } else {
-      display.setTextSize(1);
-      display.setTextColor(C_TEXT_DIM);
-      display.setCursor(61, 235);
-      display.print("BUTTONS CAN READY NOW");
-    }
+    drawCenteredText("TIE", 52, 2, C_WARNING);
   }
 
-  uint8_t phase = (uint8_t)((now / 180U) & 7U);
-  for (uint8_t i = 0; i < 7; ++i) {
-    int16_t x = 22 + i * 31;
-    int16_t y = 300 - ((phase * 13 + i * 19) % 70);
-    display.drawCircle(x, y, (i & 1U) ? 2 : 1, border);
-  }
+  // Preserve the two Final Haul boxes, but make each card self-contained by
+  // putting the fish count inside with the dollar total.
+  display.fillRect(12, 82, 98, 130, rgb565(5, 31, 44));
+  display.drawRect(12, 82, 98, 130, C_P1);
+  display.fillRect(130, 82, 98, 130, rgb565(37, 12, 31));
+  display.drawRect(130, 82, 98, 130, C_P2);
+
+  drawCenteredTextInRect("P1", 12, 98, 82, 22, 2, C_P1);
+  drawCenteredTextInRect("P2", 130, 98, 82, 22, 2, C_P2);
+
+  char line[28];
+  snprintf(line, sizeof(line), "$%lu", (unsigned long)players[0].totalValue);
+  drawCenteredTextInRect(line, 12, 98, 123, 36, 3, C_P1);
+  snprintf(line, sizeof(line), "$%lu", (unsigned long)players[1].totalValue);
+  drawCenteredTextInRect(line, 130, 98, 123, 36, 3, C_P2);
+
+  snprintf(line, sizeof(line), "%u FISH", players[0].catchCount);
+  drawCenteredTextInRect(line, 12, 98, 174, 20, 1, ST77XX_WHITE);
+  snprintf(line, sizeof(line), "%u FISH", players[1].catchCount);
+  drawCenteredTextInRect(line, 130, 98, 174, 20, 1, ST77XX_WHITE);
+
+  drawResultActionButtons();
 }
 
 // -----------------------------------------------------------------------------
@@ -2193,28 +2145,35 @@ static void advanceReveal(const GameInput &input, uint32_t now) {
   else screenDirty = true;
 }
 
-static void handleReplayPresses(const GameInput &input) {
-  // Never consume a simultaneous chord as replay input; that chord belongs to
-  // the launcher's hold-both-buttons menu shortcut.
-  if (input.leftButton && input.rightButton) return;
-
-  if (playMode == MODE_SINGLE_PLAYER) {
-    if (input.leftPressed || input.rightPressed) replayReady[0] = true;
-    return;
-  }
-
-  if (input.leftPressed) replayReady[0] = true;
-  if (input.rightPressed) replayReady[1] = true;
-}
-
-static void restartIfReady(uint32_t now) {
-  const bool ready = playMode == MODE_SINGLE_PLAYER ? replayReady[0] :
-                     (replayReady[0] && replayReady[1]);
-  if (!ready) return;
-
-  // Replay stays in the chosen mode and begins a fresh round immediately.
+static void replayCurrentMode(uint32_t now) {
+  // Replay stays in the chosen 1P/2P mode and begins a fresh round immediately.
   resetRound(now);
   beginFishing(now);
+}
+
+static void returnToFishingMenu(uint32_t now) {
+  // Results-screen Menu returns to Fishing Trawler's own title/mode selector.
+  // resetRound() also clears the start-input arm, so the button used to return
+  // must be released before it can start a new game from the menu.
+  resetRound(now);
+  setState(STATE_READY, now);
+}
+
+static bool handleResultsButtons(const GameInput &input, uint32_t now) {
+  // The launcher's hold-both chord owns simultaneous input. Never reinterpret
+  // it as Menu or Replay.
+  if ((input.leftButton && input.rightButton) ||
+      (input.leftPressed && input.rightPressed)) return false;
+
+  if (input.leftPressed) {
+    returnToFishingMenu(now);
+    return true;
+  }
+  if (input.rightPressed) {
+    replayCurrentMode(now);
+    return true;
+  }
+  return false;
 }
 
 // -----------------------------------------------------------------------------
@@ -2227,14 +2186,6 @@ static void render(uint32_t now) {
     if (!screenDirty && (uint32_t)(nowUs - lastFrameUs) < RENDER_INTERVAL_US) return;
     lastFrameUs = nowUs;
     drawFishingFrame(now);
-    screenDirty = false;
-    return;
-  }
-
-  if (state == STATE_WINNER || state == STATE_REPLAY_WAIT) {
-    if (!screenDirty && (uint32_t)(now - lastFrameAt) < 180U) return;
-    lastFrameAt = now;
-    drawWinnerFrame(now, state == STATE_REPLAY_WAIT);
     screenDirty = false;
     return;
   }
@@ -2308,28 +2259,8 @@ static void update(const GameInput &input) {
       break;
 
     case STATE_FINAL_SCORE:
-      if ((uint32_t)(now - stateStartedAt) >= FINAL_SCORE_MS) {
-        if (playMode == MODE_SINGLE_PLAYER) beginReplayWait(now);
-        else beginWinner(now);
-      }
+      if (handleResultsButtons(input, now)) return;
       break;
-
-    case STATE_WINNER:
-      handleReplayPresses(input);
-      if ((uint32_t)(now - stateStartedAt) >= WINNER_HOLD_MS) {
-        beginReplayWait(now);
-        restartIfReady(now);
-      }
-      break;
-
-    case STATE_REPLAY_WAIT: {
-      const bool oldP1 = replayReady[0];
-      const bool oldP2 = replayReady[1];
-      handleReplayPresses(input);
-      if (oldP1 != replayReady[0] || oldP2 != replayReady[1]) screenDirty = true;
-      restartIfReady(now);
-      break;
-    }
   }
 
   updateAudio(now);
