@@ -50,12 +50,14 @@ alignas(8) uint8_t GameRenderMemory::bytes[GameRenderMemory::CAPACITY];
 //
 // Edit only this list when you care about a game's exact menu position.
 const char* const PINNED_GAME_ORDER[] = {
-  "SPACE EVADERS V2",
+  "ALPINE SLALOM",
   "PONG",
   "FISHING",
   "DEEP HOOK",
   "HORIZON BURN",
   "TANK",
+  "SPACE EVADERS",
+  "SPACE EVADERS V2",
   "ICE COLD BEER",
   "DEEP VECTOR",
   "METEOR SWEEP"
