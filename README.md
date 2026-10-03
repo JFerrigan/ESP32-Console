@@ -28,6 +28,6 @@ Use the left switch to select Song, Playback, or Volume. Use the right switch to
 
 Volume changes in 5% steps. Its lower settings use a gentler output curve so quiet playback is easier to set.
 
-Game themes: Ice Cold Beer → Harbor Waltz; Fishing Trawler → Midnight Train; Deep Vector → Cave Echo; Tank → Iron March; both Space Evaders versions → Neon Sprint; Pong → Pixel Parade; Deep Hook → Sunset Bossa; Odd Stride → Dust Road; Meteor Sweep → Cloudstep; Skyhook and Scrap Claw → D Minor Nocturne. Horizon Burn plays its own beat-synchronized tracks: Easy → Afterglow Circuit (96 BPM), Normal → Rail Pulse (112 BPM), Hard → Steel Current (120 BPM), Expert → Signal Forge (140 BPM), and Master → Voltage Run (160 BPM). A song chosen in Music Player takes priority over these tracks.
+Game themes: Ice Cold Beer → Harbor Waltz; Fishing Trawler → Midnight Train; Deep Vector → Cave Echo; Tank → Iron March; Space Evaders → Neon Sprint; Pong → Pixel Parade; Deep Hook → Sunset Bossa; Odd Stride → Dust Road; Meteor Sweep → Cloudstep; Skyhook and Scrap Claw → D Minor Nocturne. Horizon Burn plays its own beat-synchronized tracks: Easy → Afterglow Circuit (96 BPM), Normal → Rail Pulse (112 BPM), Hard → Steel Current (120 BPM), Expert → Signal Forge (140 BPM), and Master → Voltage Run (160 BPM). A song chosen in Music Player takes priority over these tracks.
 
 The full arcade compiles for the ESP32 DevKit/WROOM profile with PSRAM disabled. Check timing, sound, and memory behavior on the physical board before treating the firmware as hardware validated.
