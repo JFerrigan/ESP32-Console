@@ -214,6 +214,17 @@ DebouncedSwitch rightSwitch;
 SwitchState leftSwitchState = SWITCH_CENTER;
 SwitchState rightSwitchState = SWITCH_CENTER;
 
+// Title-screen button gate. The launcher may still have a selection button held
+// when it enters this game, so the title cannot accept a start until both
+// buttons have been observed released once.
+bool leftButtonHeld = false;
+bool rightButtonHeld = false;
+bool leftButtonPressed = false;
+bool rightButtonPressed = false;
+bool previousLeftButtonHeld = false;
+bool previousRightButtonHeld = false;
+bool startInputArmed = false;
+
 // ============================================================
 // Main-loop timing
 // ============================================================
@@ -268,6 +279,10 @@ void handleWrongHole(int holeIndex);
 
 void renderGame();
 void renderBootScreen();
+void drawBootBarmaid();
+void drawBootBeerMug();
+void drawBootTitle();
+void drawBootBanner();
 void renderCompleteScreen();
 void renderGameOverScreen();
 void renderBoardFull();
@@ -392,6 +407,16 @@ void initializeInputs() {
   pinMode(LEFT_DOWN_PIN, INPUT_PULLUP);
   pinMode(RIGHT_UP_PIN, INPUT_PULLUP);
   pinMode(RIGHT_DOWN_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_1_PIN, INPUT_PULLUP); // physical right button
+  pinMode(BUTTON_2_PIN, INPUT_PULLUP); // physical left button
+
+  leftButtonHeld = (digitalRead(BUTTON_2_PIN) == LOW);
+  rightButtonHeld = (digitalRead(BUTTON_1_PIN) == LOW);
+  previousLeftButtonHeld = leftButtonHeld;
+  previousRightButtonHeld = rightButtonHeld;
+  leftButtonPressed = false;
+  rightButtonPressed = false;
+  startInputArmed = false;
 
   initializeDebouncedSwitch(leftSwitch, LEFT_UP_PIN, LEFT_DOWN_PIN);
   initializeDebouncedSwitch(rightSwitch, RIGHT_UP_PIN, RIGHT_DOWN_PIN);
@@ -507,6 +532,13 @@ void updateInputs() {
   updateSwitchDebounce();
   leftSwitchState = leftSwitch.stableState;
   rightSwitchState = rightSwitch.stableState;
+
+  previousLeftButtonHeld = leftButtonHeld;
+  previousRightButtonHeld = rightButtonHeld;
+  leftButtonHeld = (digitalRead(BUTTON_2_PIN) == LOW);
+  rightButtonHeld = (digitalRead(BUTTON_1_PIN) == LOW);
+  leftButtonPressed = leftButtonHeld && !previousLeftButtonHeld;
+  rightButtonPressed = rightButtonHeld && !previousRightButtonHeld;
 }
 
 // ============================================================
@@ -575,12 +607,26 @@ void updateGame(float dt) {
   const uint32_t elapsedStateMs = millis() - stateStartedAt;
 
   switch (gameState) {
-    case GAME_BOOT:
-      if (elapsedStateMs >= BOOT_DURATION_MS) {
+    case GAME_BOOT: {
+      const bool anyButtonHeld = leftButtonHeld || rightButtonHeld;
+
+      // The launcher can enter while its selection button is still down.
+      // First require a full release before accepting a start press.
+      if (!startInputArmed) {
+        if (!anyButtonHeld) startInputArmed = true;
+        break;
+      }
+
+      // A simultaneous two-button chord belongs to the launcher's menu-exit
+      // shortcut. Only a fresh non-chord press starts the game. This state does
+      // not fall through, so the start press is consumed here.
+      const bool bothHeld = leftButtonHeld && rightButtonHeld;
+      if (!bothHeld && (leftButtonPressed || rightButtonPressed)) {
         resetRun();
         startCurrentTarget();
       }
       break;
+    }
 
     case GAME_READY:
       // Controls remain live/debounced, but the bar does not move here.
@@ -945,17 +991,150 @@ void renderGradientBackground() {
   drawGradientRect(full);
 }
 
+void drawBootTitle() {
+  const uint16_t blue = rgb565(22, 116, 226);
+  const uint16_t gold = rgb565(255, 205, 20);
+  const uint16_t orange = rgb565(247, 96, 24);
+
+  // Chunky cabinet-side-art lettering: warm face with dark/blue shadow.
+  drawCenteredText("ICE COLD", 12, 2, ST77XX_BLACK);
+  drawCenteredText("ICE COLD", 10, 2, gold);
+  display.drawFastHLine(32, 31, 176, blue);
+
+  drawCenteredText("BEER", 39, 4, ST77XX_BLACK);
+  drawCenteredText("BEER", 36, 4, orange);
+  drawCenteredText("BEER", 34, 4, gold);
+}
+
+void drawBootBeerMug() {
+  const uint16_t beer = rgb565(245, 177, 24);
+  const uint16_t glass = rgb565(255, 225, 112);
+  const uint16_t foam = rgb565(252, 252, 238);
+  const uint16_t tray = rgb565(178, 190, 202);
+
+  // Silver tray balanced on her raised left hand.
+  display.fillRoundRect(18, 164, 79, 6, 3, tray);
+  display.drawFastHLine(22, 163, 70, ST77XX_WHITE);
+
+  // Mug body and handle.
+  display.fillRoundRect(27, 126, 31, 37, 4, beer);
+  display.drawRoundRect(27, 126, 31, 37, 4, glass);
+  display.drawRoundRect(54, 135, 14, 20, 6, glass);
+  display.drawRoundRect(57, 138, 8, 14, 4, ST77XX_BLACK);
+  display.drawFastVLine(35, 132, 24, glass);
+  display.drawFastVLine(45, 132, 24, glass);
+
+  // Big frothy head, intentionally exaggerated like the original cabinet art.
+  display.fillCircle(31, 125, 7, foam);
+  display.fillCircle(39, 121, 8, foam);
+  display.fillCircle(48, 123, 8, foam);
+  display.fillCircle(55, 126, 6, foam);
+  display.fillCircle(31, 133, 4, foam);
+  display.fillCircle(52, 135, 4, foam);
+  display.drawPixel(23, 126, ST77XX_WHITE);
+  display.drawLine(20, 126, 26, 126, ST77XX_WHITE);
+  display.drawLine(23, 123, 23, 129, ST77XX_WHITE);
+}
+
+void drawBootBarmaid() {
+  const uint16_t skin = rgb565(255, 206, 166);
+  const uint16_t hair = rgb565(255, 216, 22);
+  const uint16_t hairShadow = rgb565(216, 145, 0);
+  const uint16_t blue = rgb565(20, 118, 220);
+  const uint16_t red = rgb565(205, 27, 57);
+  const uint16_t green = rgb565(15, 104, 47);
+  const uint16_t white = rgb565(250, 246, 232);
+
+  // Red/gold roundel behind the figure, echoing the real side-art badge.
+  display.fillCircle(132, 153, 72, rgb565(173, 22, 43));
+  display.drawCircle(132, 153, 72, rgb565(255, 196, 19));
+  display.drawCircle(132, 153, 67, rgb565(255, 196, 19));
+
+  // Flowing blonde hair mass and curls.
+  display.fillCircle(142, 119, 30, hairShadow);
+  display.fillCircle(148, 119, 28, hair);
+  display.fillCircle(169, 133, 22, hair);
+  display.fillCircle(176, 153, 20, hair);
+  display.fillCircle(177, 174, 18, hair);
+  display.fillCircle(169, 191, 16, hair);
+  display.fillCircle(124, 113, 18, hair);
+
+  // Face.
+  display.fillCircle(137, 125, 19, skin);
+  display.drawPixel(130, 123, ST77XX_BLACK);
+  display.drawPixel(145, 123, ST77XX_BLACK);
+  display.drawFastHLine(134, 136, 8, rgb565(190, 20, 45));
+
+  // Flower in hair.
+  display.fillCircle(117, 111, 5, ST77XX_RED);
+  display.fillCircle(123, 109, 5, ST77XX_RED);
+  display.fillCircle(120, 115, 5, ST77XX_RED);
+  display.fillCircle(120, 111, 2, ST77XX_YELLOW);
+
+  // White blouse shoulders and blue corset.
+  display.fillCircle(116, 151, 12, white);
+  display.fillCircle(157, 151, 12, white);
+  display.fillTriangle(116, 148, 158, 148, 150, 190, blue);
+  display.fillTriangle(116, 148, 150, 190, 122, 190, blue);
+  display.drawFastVLine(136, 155, 29, white);
+  for (int y = 158; y <= 179; y += 7) {
+    display.drawLine(128, y, 143, y + 5, rgb565(255, 215, 35));
+    display.drawLine(143, y, 128, y + 5, rgb565(255, 215, 35));
+  }
+
+  // Raised arm under the tray and resting arm on the skirt.
+  display.drawLine(117, 153, 91, 169, skin);
+  display.drawLine(91, 169, 78, 168, skin);
+  display.drawLine(158, 154, 172, 179, skin);
+  display.drawLine(172, 179, 163, 196, skin);
+
+  // Green sash and full red skirt.
+  display.fillTriangle(111, 187, 158, 187, 190, 239, red);
+  display.fillTriangle(111, 187, 190, 239, 80, 239, red);
+  display.fillTriangle(109, 183, 138, 190, 92, 224, green);
+  display.fillTriangle(138, 190, 102, 206, 76, 193, green);
+  display.drawLine(124, 198, 116, 235, rgb565(120, 18, 38));
+  display.drawLine(142, 196, 151, 236, rgb565(120, 18, 38));
+
+  drawBootBeerMug();
+}
+
+void drawBootBanner() {
+  const uint16_t gold = rgb565(242, 181, 24);
+  const uint16_t darkGold = rgb565(153, 94, 5);
+  const uint16_t red = rgb565(198, 28, 47);
+
+  display.fillRoundRect(39, 242, 162, 34, 8, darkGold);
+  display.fillRoundRect(43, 239, 154, 32, 8, gold);
+  display.fillTriangle(43, 247, 22, 258, 43, 267, gold);
+  display.fillTriangle(197, 247, 218, 258, 197, 267, gold);
+  drawCenteredText("TAITO", 246, 3, red);
+}
+
 void renderBootScreen() {
-  renderGradientBackground();
+  // Procedural recreation of the real Ice Cold Beer cabinet side art. No
+  // external bitmap is used, keeping the game a single drop-in header.
+  const uint16_t deepBlue = rgb565(9, 55, 150);
+  const uint16_t brightBlue = rgb565(25, 124, 230);
+
+  display.fillScreen(deepBlue);
+  display.fillRoundRect(5, 5, 230, 304, 16, brightBlue);
+  display.drawRoundRect(8, 8, 224, 298, 14, ST77XX_BLACK);
+  display.drawRoundRect(12, 12, 216, 290, 12, deepBlue);
 
 #if SHOW_ORIENTATION_TEST
   drawCenteredText("TOP", 5, 1, ST77XX_CYAN);
   drawCenteredText("BOTTOM", 300, 1, ST77XX_CYAN);
 #endif
 
-  drawCenteredText("ICE COLD", 120, 3, ST77XX_WHITE);
-  drawCenteredText("BEER", 158, 4, ST77XX_YELLOW);
-  drawCenteredText("ESP32", 214, 1, COLOR_GRAY);
+  drawBootTitle();
+  drawBootBarmaid();
+  drawBootBanner();
+
+  // Persistent prompt: this screen remains until release -> fresh press.
+  display.fillRect(48, 283, 144, 24, deepBlue);
+  display.drawRect(48, 283, 144, 24, rgb565(255, 205, 20));
+  drawCenteredText("Press to Start", 289, 1, ST77XX_WHITE);
 }
 
 void renderCompleteScreen() {
