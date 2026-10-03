@@ -42,7 +42,7 @@ static constexpr int16_t SCREEN_W = 240;
 static constexpr int16_t SCREEN_H = 320;
 static constexpr int16_t HUD_H = 32;
 static constexpr int16_t WORLD_TOP = 32;
-static constexpr int16_t WORLD_BOTTOM = 304;
+static constexpr int16_t WORLD_BOTTOM = SCREEN_H;
 static constexpr int16_t FOOTER_Y = 304;
 static constexpr int16_t FOOTER_H = 16;
 static constexpr int16_t STRIP_H = 16;
@@ -2167,39 +2167,56 @@ static void renderWorld() {
   }
 }
 
-static void drawEndActionButtons() {
-  static constexpr int16_t Y=289;
-  static constexpr int16_t H=27;
-  static constexpr int16_t LEFT_X=7;
-  static constexpr int16_t LEFT_W=80;
-  static constexpr int16_t RIGHT_X=146;
-  static constexpr int16_t RIGHT_W=87;
-
-  // Solid one-pixel framed buttons so they stay legible over either snow or
-  // the results backdrop. The arrows point toward the physical edge/button.
-  display.fillRect(LEFT_X,Y,LEFT_W,H,C_NAVY);
-  display.fillRect(LEFT_X+1,Y+1,LEFT_W-2,H-2,C_PALE);
-  display.fillRect(RIGHT_X,Y,RIGHT_W,H,C_NAVY);
-  display.fillRect(RIGHT_X+1,Y+1,RIGHT_W-2,H-2,C_PALE);
-
+static void drawActionButton(int16_t x,int16_t y,int16_t w,int16_t h,const char* label) {
+  display.fillRect(x,y,w,h,C_NAVY);
+  display.fillRect(x+1,y+1,w-2,h-2,C_PALE);
   display.setTextSize(1);
   display.setTextColor(C_ORANGE,C_PALE);
-  display.setCursor(LEFT_X+10,Y+10);
-  display.print("< MENU");
-  display.setCursor(RIGHT_X+18,Y+10);
-  display.print("RETRY >");
+  int16_t tx=x+(w-textWidth(label,1))/2;
+  int16_t ty=y+(h-7)/2;
+  display.setCursor(tx,ty);
+  display.print(label);
+}
+
+static void drawResultsActionButtons() {
+  // Keep these above the standard 304-319 menu footer.
+  static constexpr int16_t Y=284;
+  static constexpr int16_t H=19;
+  drawActionButton(7,Y,80,H,"< MENU");
+  drawActionButton(146,Y,87,H,"RETRY >");
+}
+
+static void drawStandardFooter() {
+  display.fillRect(0,FOOTER_Y,SCREEN_W,FOOTER_H,C_NAVY);
+  display.setTextSize(1);
+  display.setTextColor(C_WHITE,C_NAVY);
+  const char* footerText="HOLD BOTH: MENU";
+  display.setCursor((SCREEN_W-textWidth(footerText,1))/2,FOOTER_Y+4);
+  display.print(footerText);
 }
 
 static void drawWipeoutOverlay(uint32_t nowMs) {
-  display.fillRect(42,112,156,56,C_PALE);
+  // Wipeout owns a centered splash panel. It intentionally has no bottom
+  // menu footer: the Menu/Retry choices live inside this panel instead.
+  static constexpr int16_t PANEL_X=22;
+  static constexpr int16_t PANEL_Y=104;
+  static constexpr int16_t PANEL_W=196;
+  static constexpr int16_t PANEL_H=92;
+
+  display.fillRect(PANEL_X,PANEL_Y,PANEL_W,PANEL_H,C_NAVY);
+  display.fillRect(PANEL_X+2,PANEL_Y+2,PANEL_W-4,PANEL_H-4,C_PALE);
   display.setTextColor(C_NAVY,C_PALE);
   display.setTextSize(2);
-  display.setCursor(73,124);
+  display.setCursor(73,PANEL_Y+14);
   display.print("WIPEOUT");
   display.setTextSize(1);
 
-  if (elapsedMs(nowMs,g.wipeoutStartedMs)>=900)
-    drawEndActionButtons();
+  if (elapsedMs(nowMs,g.wipeoutStartedMs)>=900) {
+    static constexpr int16_t BUTTON_Y=PANEL_Y+55;
+    static constexpr int16_t BUTTON_H=23;
+    drawActionButton(PANEL_X+10,BUTTON_Y,78,BUTTON_H,"< MENU");
+    drawActionButton(PANEL_X+108,BUTTON_Y,78,BUTTON_H,"RETRY >");
+  }
 }
 
 static void drawHud(uint32_t nowMs) {
@@ -2328,7 +2345,8 @@ static void drawResults() {
 
     blitStrip(sy,hh);
   }
-  drawEndActionButtons();
+  drawResultsActionButtons();
+  drawStandardFooter();
 }
 
 static void renderFrame() {
