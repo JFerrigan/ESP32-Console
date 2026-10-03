@@ -10,6 +10,15 @@
 #include <stdio.h>
 #include <string.h>
 
+// Optional launcher hook. On the real Jakeboy sketch this resolves to the
+// launcher's global enterMenu(); simulator/standalone builds can leave it absent.
+#if defined(__GNUC__)
+extern void enterMenu() __attribute__((weak));
+#define ALPINE_HAS_WEAK_MENU_HOOK 1
+#else
+#define ALPINE_HAS_WEAK_MENU_HOOK 0
+#endif
+
 #if defined(ARDUINO_ARCH_ESP32) && defined(__has_include)
   #if __has_include("GameRenderMemory.h")
     #include "GameRenderMemory.h"
@@ -90,7 +99,6 @@ static constexpr float OFFPISTE_RAMP = 8.0f;
 static constexpr float PLAYER_RADIUS = 0.32f;
 static constexpr float POLE_RADIUS = 0.12f;
 static constexpr float GATE_CLEARANCE = 0.65f;
-static constexpr float GATE_MAX_PASS = 5.0f;
 
 static constexpr uint32_t MISS_PENALTY_MS = 3000;
 static constexpr uint32_t HIT_PENALTY_MS = 3000;
@@ -295,7 +303,6 @@ struct GameState {
   uint32_t wipeoutStartedMs;
   bool forceFrame;
   bool hudDirty;
-  bool footerDirty;
 };
 
 static GameState g;
@@ -1117,9 +1124,11 @@ static void resolveGatePlane(uint8_t index,float crossingX) {
     const GateDef& gd=runCourse[index];
     float side=(float)(int8_t)gd.passSide;
     float q=side*(crossingX-gd.x);
-    float center=courseCenterX(gd.z);
-    bool legal=q>=GATE_CLEARANCE-0.0001f && q<=GATE_MAX_PASS+0.0001f &&
-      fabsf(crossingX-center)<=PISTE_HALF-PLAYER_RADIUS+0.0001f &&
+    // A slalom gate is a one-sided checkpoint, not a narrow passage window.
+    // Once the skier is at least the required clearance beyond the pole on the
+    // indicated side, the gate is clean regardless of how far out they are or
+    // whether they have left the groomed piste.
+    bool legal=q>=GATE_CLEARANCE-0.0001f &&
       g.player.mode==MoveMode::Skiing;
     if (legal) {
       gr.outcome=GateOutcome::Clean;
@@ -2158,27 +2167,39 @@ static void renderWorld() {
   }
 }
 
+static void drawEndActionButtons() {
+  static constexpr int16_t Y=289;
+  static constexpr int16_t H=27;
+  static constexpr int16_t LEFT_X=7;
+  static constexpr int16_t LEFT_W=80;
+  static constexpr int16_t RIGHT_X=146;
+  static constexpr int16_t RIGHT_W=87;
+
+  // Solid one-pixel framed buttons so they stay legible over either snow or
+  // the results backdrop. The arrows point toward the physical edge/button.
+  display.fillRect(LEFT_X,Y,LEFT_W,H,C_NAVY);
+  display.fillRect(LEFT_X+1,Y+1,LEFT_W-2,H-2,C_PALE);
+  display.fillRect(RIGHT_X,Y,RIGHT_W,H,C_NAVY);
+  display.fillRect(RIGHT_X+1,Y+1,RIGHT_W-2,H-2,C_PALE);
+
+  display.setTextSize(1);
+  display.setTextColor(C_ORANGE,C_PALE);
+  display.setCursor(LEFT_X+10,Y+10);
+  display.print("< MENU");
+  display.setCursor(RIGHT_X+18,Y+10);
+  display.print("RETRY >");
+}
+
 static void drawWipeoutOverlay(uint32_t nowMs) {
-  display.fillRect(42,112,156,72,C_PALE);
+  display.fillRect(42,112,156,56,C_PALE);
   display.setTextColor(C_NAVY,C_PALE);
   display.setTextSize(2);
   display.setCursor(73,124);
   display.print("WIPEOUT");
-  if (elapsedMs(nowMs,g.wipeoutStartedMs)>=900) {
-    display.setTextSize(1);
-    display.setCursor(59,158);
-    display.print("TAP EITHER TO RESTART");
-  }
   display.setTextSize(1);
-}
 
-static void drawFooter() {
-  fillStrip(C_NAVY,FOOTER_H);
-  Raster r{stripPixels,FOOTER_Y,FOOTER_H};
-  const char* s="HOLD BOTH: MENU";
-  r.text((SCREEN_W-textWidth(s,1))/2,FOOTER_Y+4,1,C_WHITE,s);
-  blitStrip(FOOTER_Y,FOOTER_H);
-  g.footerDirty=false;
+  if (elapsedMs(nowMs,g.wipeoutStartedMs)>=900)
+    drawEndActionButtons();
 }
 
 static void drawHud(uint32_t nowMs) {
@@ -2240,14 +2261,13 @@ static void renderTitleStrip(int16_t sy,int16_t hh) {
   r.line(190,202,190,166,C_BLUE); r.rect(170,166,20,10,C_BLUE);
   drawTitleSkier(r,125,220,1.7f);
 
-  const char* a="LEFT / RIGHT: CARVE";
-  const char* b="TURN EARLY. RELEASE EARLY.";
-  const char* c="PASS THE ARROW SIDE";
-  const char* d="TAP EITHER TO START";
-  r.text((SCREEN_W-textWidth(a,1))/2,250,1,C_NAVY,a);
-  r.text((SCREEN_W-textWidth(b,1))/2,264,1,C_NAVY,b);
-  r.text((SCREEN_W-textWidth(c,1))/2,278,1,C_NAVY,c);
-  r.text((SCREEN_W-textWidth(d,1))/2,292,1,C_ORANGE,d);
+  const char* startText="PRESS TO START";
+  r.text((SCREEN_W-textWidth(startText,1))/2,292,1,C_ORANGE,startText);
+
+  // Standard launcher exit hint belongs to the title/menu only.
+  r.rect(0,FOOTER_Y,SCREEN_W,FOOTER_H,C_NAVY);
+  const char* footerText="HOLD BOTH: MENU";
+  r.text((SCREEN_W-textWidth(footerText,1))/2,FOOTER_Y+4,1,C_WHITE,footerText);
 }
 
 static void drawTitle() {
@@ -2256,7 +2276,6 @@ static void drawTitle() {
     renderTitleStrip(sy,hh);
     blitStrip(sy,hh);
   }
-  drawFooter();
 }
 
 static void drawCountdown() {
@@ -2307,11 +2326,9 @@ static void drawResults() {
     if (!g.result.recordEligible)
       r.text(24,275,1,C_RED,"TIMING STALL - NO RECORD");
 
-    const char* replay="TAP EITHER TO REPLAY";
-    r.text((SCREEN_W-textWidth(replay,1))/2,291,1,C_ORANGE,replay);
     blitStrip(sy,hh);
   }
-  drawFooter();
+  drawEndActionButtons();
 }
 
 static void renderFrame() {
@@ -2322,13 +2339,11 @@ static void renderFrame() {
     case Phase::FinishCoast:
       renderWorld();
       drawHud(millis());
-      if (g.footerDirty) drawFooter();
       break;
     case Phase::Wipeout:
       renderWorld();
       drawHud(millis());
       drawWipeoutOverlay(millis());
-      if (g.footerDirty) drawFooter();
       break;
     case Phase::Results: drawResults(); break;
   }
@@ -2365,7 +2380,6 @@ static void resetRun() {
   g.clock.processedRaceUs=0;
   g.clock.lastHudMs=0;
   g.hudDirty=true;
-  g.footerDirty=true;
 }
 
 static void setPhase(Phase next,uint32_t nowMs,uint32_t nowUs) {
@@ -2459,8 +2473,7 @@ inline void update(const GameInput& input) {
   g.controls=sampleControls(input);
   Phase phaseAtStart=g.phase;
 
-  if (phaseAtStart==Phase::Title || phaseAtStart==Phase::Results ||
-      (phaseAtStart==Phase::Wipeout && elapsedMs(nowMs,g.wipeoutStartedMs)>=900))
+  if (phaseAtStart==Phase::Title)
     g.controls.uiTap=updateTapLatch(input,nowMs);
 
   switch(phaseAtStart) {
@@ -2477,11 +2490,29 @@ inline void update(const GameInput& input) {
       updateFinishCoast(nowMs);
       break;
     case Phase::Results:
-      if (g.controls.uiTap) setPhase(Phase::Countdown,nowMs,nowUs);
+      if (input.leftPressed) {
+        stopAudio();
+#if ALPINE_HAS_WEAK_MENU_HOOK
+        if (::enterMenu) { ::enterMenu(); return; }
+#endif
+        setPhase(Phase::Title,nowMs,nowUs);
+      } else if (input.rightPressed) {
+        setPhase(Phase::Countdown,nowMs,nowUs);
+      }
       break;
     case Phase::Wipeout:
       updateWipeout(deltaUs,nowMs);
-      if (g.controls.uiTap) setPhase(Phase::Countdown,nowMs,nowUs);
+      if (elapsedMs(nowMs,g.wipeoutStartedMs)>=900) {
+        if (input.leftPressed) {
+          stopAudio();
+#if ALPINE_HAS_WEAK_MENU_HOOK
+          if (::enterMenu) { ::enterMenu(); return; }
+#endif
+          setPhase(Phase::Title,nowMs,nowUs);
+        } else if (input.rightPressed) {
+          setPhase(Phase::Countdown,nowMs,nowUs);
+        }
+      }
       break;
   }
 
