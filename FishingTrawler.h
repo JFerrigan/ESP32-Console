@@ -7,6 +7,7 @@
 #include "GameAPI.h"
 #include "Hardware.h"
 #include "MusicPlayer.h"
+#include "MenuFooter.h"
 
 // The launcher music system also owns the buzzers. Leave game SFX disabled by
 // default so this game cannot fight background music. Set to 1 if you want the
@@ -1769,6 +1770,7 @@ static void drawReadyFrame() {
   display.setTextColor(ST77XX_WHITE);
   display.setCursor(36, 277);
   display.print("Press to Start");
+  MenuFooter::draw(display);
 }
 
 static uint32_t runningRevealTotal(const PlayerState &p, uint8_t throughIndex) {
@@ -1993,6 +1995,7 @@ static void drawResultActionButtons() {
   display.setCursor(140, 284);
   display.print("REPLAY");
   display.fillTriangle(224, 290, 216, 283, 216, 297, C_P2);
+  MenuFooter::draw(display);
 }
 
 static void drawFinalScoreFrame() {

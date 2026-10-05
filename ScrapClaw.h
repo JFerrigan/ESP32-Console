@@ -8,6 +8,7 @@
 #include <string.h>
 #include <new>
 #include "GameAPI.h"
+#include "MenuFooter.h"
 #include "Hardware.h"
 
 #ifndef SCRAPCLAW_AUDIO_HOOKS
@@ -698,7 +699,7 @@ static void drawOverlay(){
   else if(W->snap.phase==PHASE_RESULTS){display.fillRect(20,88,200,145,COL_SHADOW);display.drawRect(20,88,200,145,W->snap.quotaMet?COL_GREEN:COL_CORAL);display.setTextSize(2);display.setTextColor(W->snap.quotaMet?COL_GREEN:COL_CORAL,COL_SHADOW);display.setCursor(49,100);display.print(W->snap.quotaMet?"QUOTA MET":"QUOTA MISSED");display.setTextSize(1);display.setTextColor(COL_TEXT,COL_SHADOW);display.setCursor(50,132);display.print("TOTAL  $");display.print(W->snap.score);display.setCursor(50,148);display.print("QUOTA  $");display.print(W->snap.quota);display.setCursor(50,164);display.print("DAMAGED ");display.print(W->snap.damaged);display.print("  LOST ");display.print(W->snap.destroyed);display.setCursor(50,180);display.print("BEST   ");display.print(W->snap.bestName[0]?W->snap.bestName:"--");display.print(" $");display.print(W->snap.bestValue);display.setCursor(54,210);display.print("PRESS TO RUN AGAIN");}
   else if(W->snap.phase==PHASE_UNAVAILABLE){display.fillScreen(COL_BG);display.setTextColor(COL_CORAL,COL_BG);display.setTextSize(2);display.setCursor(35,130);display.print("SCRAP CLAW");display.setTextSize(1);display.setCursor(50,160);display.print("WORKSPACE FAILED");}
 }
-static void drawFrame(){captureSnapshot();for(int s=HUD_H/STRIP_H;s<STRIP_COUNT;s++)if(W->dirty[s]){int y=s*STRIP_H;int h=min(STRIP_H,SCREEN_H-y);drawStrip(y,h);W->dirty[s]=false;}drawHud();drawOverlay();}
+static void drawFrame(){captureSnapshot();for(int s=HUD_H/STRIP_H;s<STRIP_COUNT;s++)if(W->dirty[s]){int y=s*STRIP_H;int h=min(STRIP_H,SCREEN_H-y);drawStrip(y,h);W->dirty[s]=false;}drawHud();drawOverlay();if(W->snap.phase==PHASE_READY||W->snap.phase==PHASE_RESULTS||W->snap.phase==PHASE_UNAVAILABLE)MenuFooter::draw(display);}
 
 // -----------------------------------------------------------------------------
 // Public lifecycle

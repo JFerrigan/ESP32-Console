@@ -7,6 +7,7 @@
 #include "GameAPI.h"
 #include "GameRenderMemory.h"
 #include "Hardware.h"
+#include "MenuFooter.h"
 
 namespace SpaceEvadersV2 {
 
@@ -268,7 +269,7 @@ static const StarPoint STAR_PAIRS[12] = {
 };
 
 // 5x7 column font: A-Z, 0-9, space, !, -
-static const uint8_t FONT5X7[39][5] = {
+static const uint8_t FONT5X7[40][5] = {
   {0x7E,0x11,0x11,0x11,0x7E}, // A
   {0x7F,0x49,0x49,0x49,0x36}, // B
   {0x3E,0x41,0x41,0x41,0x22}, // C
@@ -307,7 +308,8 @@ static const uint8_t FONT5X7[39][5] = {
   {0x06,0x49,0x49,0x29,0x1E}, // 9
   {0x00,0x00,0x00,0x00,0x00}, // space
   {0x00,0x00,0x5F,0x00,0x00}, // !
-  {0x08,0x08,0x08,0x08,0x08}  // -
+  {0x08,0x08,0x08,0x08,0x08}, // -
+  {0x00,0x36,0x36,0x00,0x00}  // :
 };
 
 static const int8_t EXPLOSION_DIRS[8][2] = {
@@ -1124,6 +1126,7 @@ int8_t glyphIndex(char c) {
   if (c == ' ') return 36;
   if (c == '!') return 37;
   if (c == '-') return 38;
+  if (c == ':') return 39;
   return 36;
 }
 
@@ -1399,6 +1402,10 @@ void drawPhaseOverlay() {
         fillPlayerRect(p, 151, 143, 3, 3, C_GOLD);
         fillPlayerRect(p, 166, 145, 2, 2, C_GOLD);
       }
+      // Each player views a rotated half of the display. Place the footer at
+      // the bottom of each player's local view, only on the match menu.
+      fillPlayerRect(p, 0, 224, 320, 16, MenuFooter::BACKGROUND);
+      drawCenteredText(p, MenuFooter::TEXT, 228, 1, MenuFooter::FOREGROUND);
     }
   }
 }
@@ -1886,4 +1893,3 @@ void update(const GameInput &input) {
 }
 
 } // namespace SpaceEvadersV2
-

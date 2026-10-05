@@ -1,5 +1,6 @@
 #pragma once
 #include "Hardware.h"
+#include "MenuFooter.h"
 #include <Arduino.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
@@ -3438,14 +3439,15 @@ void renderBootScreen() {
   display.drawFastHLine(8, BOOT_ART_H + 2, SCREEN_WIDTH - 16, gold);
   display.drawFastHLine(18, BOOT_ART_H + 5, SCREEN_WIDTH - 36, orange);
 
-  display.fillRoundRect(23, 273, 194, 36, 8, panelBlue);
-  display.drawRoundRect(23, 273, 194, 36, 8, ST77XX_BLACK);
-  display.drawRoundRect(25, 275, 190, 32, 7, gold);
-  drawCenteredText("Press to Start", 283, 2, ST77XX_WHITE);
+  display.fillRoundRect(23, 265, 194, 36, 8, panelBlue);
+  display.drawRoundRect(23, 265, 194, 36, 8, ST77XX_BLACK);
+  display.drawRoundRect(25, 267, 190, 32, 7, gold);
+  drawCenteredText("Press to Start", 275, 2, ST77XX_WHITE);
 
 #if SHOW_ORIENTATION_TEST
   drawCenteredText("BOTTOM", 310, 1, ST77XX_CYAN);
 #endif
+  MenuFooter::draw(display);
 }
 
 void renderCompleteScreen() {

@@ -12,6 +12,7 @@
 #include "GameAPI.h"
 #include "Hardware.h"
 #include "MusicPlayer.h"
+#include "MenuFooter.h"
 
 #ifndef GAME_API_LIFECYCLE_VERSION
 #error "Odd Stride requires the lifecycle-enabled GameAPI.h included with its install package."
@@ -420,7 +421,7 @@ static void drawResourceError(){
   display.fillScreen(PALETTE[0]); display.setTextColor(PALETTE[1]); display.setTextSize(2);
   display.setCursor(14,105); display.print("ODD STRIDE");
   display.setTextSize(1); display.setCursor(42,154); display.print("NOT ENOUGH MEMORY");
-  display.setCursor(26,300); display.print("HOLD BOTH BUTTONS: MENU");
+  MenuFooter::draw(display);
 }
 
 // -----------------------------------------------------------------------------
@@ -985,8 +986,8 @@ static void drawCharacter(TileCanvas&cv,const RenderSnapshot&sn){for(uint8_t i=0
 static void drawHud(TileCanvas&cv,const RenderSnapshot&sn){cv.fillRect(0,0,240,32,10);cv.setTextWrap(false);cv.setTextColor(7);cv.setTextSize(1);cv.setCursor(8,4);cv.print("DIST");cv.setCursor(132,4);cv.print("BEST");cv.setTextSize(2);cv.setCursor(8,14);cv.print(sn.distanceText);cv.setCursor(132,14);cv.print(sn.bestText);}
 static void drawControls(TileCanvas&cv,const RenderSnapshot&sn){cv.fillRect(0,296,240,24,10);cv.setTextSize(1);cv.setTextColor(2);cv.setCursor(8,301);cv.print("L");cv.setTextColor(3);cv.setCursor(126,301);cv.print("R");cv.setTextColor(7);cv.setCursor(22,301);cv.print(sn.controls.hip[0]>0?"^":(sn.controls.hip[0]<0?"v":"-"));cv.setCursor(140,301);cv.print(sn.controls.hip[1]>0?"^":(sn.controls.hip[1]<0?"v":"-"));cv.setCursor(35,301);cv.print(sn.controls.kneeHeld[0]?"KNEE BEND":"KNEE EXT");cv.setCursor(153,301);cv.print(sn.controls.kneeHeld[1]?"BEND":"EXT");}
 static void centerText(TileCanvas&cv,const char*s,int16_t y,uint8_t size,uint8_t color){int16_t x1,y1;uint16_t w,h;cv.setTextSize(size);cv.setTextColor(color);cv.getTextBounds(s,0,y,&x1,&y1,&w,&h);cv.setCursor((240-(int16_t)w)/2,y);cv.print(s);}
-static void drawIntro(TileCanvas&cv){cv.fillRect(0,32,240,264,0);centerText(cv,"ODD STRIDE",40,3,1);cv.fillRect(44,103,34,86,2);cv.fillRect(162,103,34,86,3);cv.fillCircle(61,103,12,4);cv.fillCircle(179,103,12,4);cv.setTextSize(1);cv.setTextColor(1);cv.setCursor(20,208);cv.print("SWITCH UP: HIP FORWARD");cv.setCursor(20,222);cv.print("CENTER: COAST");cv.setCursor(20,236);cv.print("DOWN: HIP BACK");cv.setCursor(20,250);cv.print("HOLD BUTTON: BEND KNEE");centerText(cv,"TAP EITHER BUTTON",274,1,1);centerText(cv,"HOLD BOTH: MENU",300,1,1);}
-static void drawPhaseOverlay(TileCanvas&cv,const RenderSnapshot&sn){if(sn.phase==Phase::INTRO){drawIntro(cv);return;}if(sn.phase==Phase::READY){cv.fillRect(24,64,192,43,10);cv.drawRect(24,64,192,43,4);centerText(cv,sn.centerText,76,1,7);if(!strcmp(sn.centerText,"CENTER BOTH SWITCHES")){centerText(cv,"RELEASE BUTTONS",90,1,7);}}else if(sn.phase==Phase::GAME_OVER){cv.fillRect(18,52,204,102,10);cv.drawRect(18,52,204,102,sn.newBest?13:4);centerText(cv,sn.resultText,62,2,7);cv.setTextSize(1);cv.setTextColor(7);cv.setCursor(38,94);cv.print("DIST ");cv.print(sn.distanceText);cv.setCursor(38,108);cv.print("BEST ");cv.print(sn.bestText);if(sn.newBest)centerText(cv,"NEW BEST",126,2,13);centerText(cv,"TAP EITHER BUTTON: RETRY",279,1,1);centerText(cv,"HOLD BOTH: MENU",301,1,7);}}
+static void drawIntro(TileCanvas&cv){cv.fillRect(0,32,240,264,0);centerText(cv,"ODD STRIDE",40,3,1);cv.fillRect(44,103,34,86,2);cv.fillRect(162,103,34,86,3);cv.fillCircle(61,103,12,4);cv.fillCircle(179,103,12,4);cv.setTextSize(1);cv.setTextColor(1);cv.setCursor(20,208);cv.print("SWITCH UP: HIP FORWARD");cv.setCursor(20,222);cv.print("CENTER: COAST");cv.setCursor(20,236);cv.print("DOWN: HIP BACK");cv.setCursor(20,250);cv.print("HOLD BUTTON: BEND KNEE");centerText(cv,"TAP EITHER BUTTON",274,1,1);MenuFooter::drawIndexed(cv,1,0);}
+static void drawPhaseOverlay(TileCanvas&cv,const RenderSnapshot&sn){if(sn.phase==Phase::INTRO){drawIntro(cv);return;}if(sn.phase==Phase::READY){cv.fillRect(24,64,192,43,10);cv.drawRect(24,64,192,43,4);centerText(cv,sn.centerText,76,1,7);if(!strcmp(sn.centerText,"CENTER BOTH SWITCHES")){centerText(cv,"RELEASE BUTTONS",90,1,7);}}else if(sn.phase==Phase::GAME_OVER){cv.fillRect(18,52,204,102,10);cv.drawRect(18,52,204,102,sn.newBest?13:4);centerText(cv,sn.resultText,62,2,7);cv.setTextSize(1);cv.setTextColor(7);cv.setCursor(38,94);cv.print("DIST ");cv.print(sn.distanceText);cv.setCursor(38,108);cv.print("BEST ");cv.print(sn.bestText);if(sn.newBest)centerText(cv,"NEW BEST",126,2,13);centerText(cv,"TAP EITHER BUTTON: RETRY",279,1,1);MenuFooter::drawIndexed(cv,1,0);}}
 static void drawDebugOverlay(TileCanvas&cv,const RenderSnapshot&sn){(void)cv;(void)sn;}
 static void composeTile(Context&c,uint16_t tileIndex){RendererState&r=c.renderer;int16_t tx=(tileIndex%TILES_X)*16,ty=(tileIndex/TILES_X)*16;memset(r.candidate,0,PACKED_TILE_BYTES);r.canvas.bind(r.candidate,tx,ty);drawBackground(r.canvas,r.snapshot);drawTerrain(r.canvas,r.snapshot);drawCharacter(r.canvas,r.snapshot);drawHud(r.canvas,r.snapshot);drawControls(r.canvas,r.snapshot);drawPhaseOverlay(r.canvas,r.snapshot);if(ODD_STRIDE_DEBUG)drawDebugOverlay(r.canvas,r.snapshot);}
 static bool tileValid(const RendererState&r,uint16_t i){return (r.valid[i>>3]&(1u<<(i&7)))!=0;}static void markTileValid(RendererState&r,uint16_t i){r.valid[i>>3]|=(uint8_t)(1u<<(i&7));}

@@ -8,6 +8,7 @@
 #include "GameAPI.h"
 #include "Hardware.h"
 #include "MusicPlayer.h"
+#include "MenuFooter.h"
 
 namespace Pong {
 
@@ -1412,6 +1413,7 @@ void drawModeSelectBase() {
   }
   drawMenuBall();
   oldMenuBallRect = menuBallBounds();
+  MenuFooter::draw(display);
   lastMenuAnimMs = millis();
 }
 
@@ -1501,6 +1503,7 @@ void drawVictoryBase() {
   display.setCursor(47, 9);
   display.print("MATCH OVER");
   drawWinnerText();
+  MenuFooter::draw(display);
   victoryFrameInitialized = true;
   for (uint8_t i = 0; i < MAX_PARTICLES; ++i) oldParticleRects[i] = invalidRect();
 }
@@ -1532,6 +1535,7 @@ void renderVictoryFrame() {
   display.setCursor(47, 9);
   display.print("MATCH OVER");
   drawWinnerText();
+  MenuFooter::draw(display);
   saveCurrentParticleRects(true);
 }
 

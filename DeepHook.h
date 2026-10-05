@@ -6,6 +6,7 @@
 #include "GameAPI.h"
 #include "Hardware.h"
 #include "MusicPlayer.h"
+#include "MenuFooter.h"
 
 namespace DeepHook {
 
@@ -53,6 +54,17 @@ constexpr float FINAL_REGION_BIOME_DEPTH = 5000.0f;
 constexpr float FINAL_RARITY_RAMP_DEPTH = 4000.0f;
 constexpr float HOOK_ANCHOR_Y = 134.4f;
 constexpr float CAMERA_SURFACE_CLAMP = -72.0f;
+
+// Keep a small pipeline of fish swimming well below the visible playfield.
+// At maximum sustained descent (including frequent straight jigs), these lanes
+// get roughly 5-7 seconds of simulation before the hook reaches them, giving
+// even slow Drifters time to cross toward the middle instead of spawning too
+// late at the side edges.
+constexpr float FISH_PRELOAD_MIN_SCREEN_Y = WATER_BOTTOM + 280.0f;
+constexpr float FISH_PRELOAD_MAX_SCREEN_Y = WATER_BOTTOM + 460.0f;
+constexpr float FISH_PRELOAD_TRACK_SCREEN_Y = WATER_BOTTOM + 28.0f;
+constexpr float FISH_PRELOAD_CULL_SCREEN_Y = FISH_PRELOAD_MAX_SCREEN_Y + 100.0f;
+constexpr uint8_t FISH_PRELOAD_TARGET = 6;
 
 constexpr uint32_t FIXED_US = 16667u;
 constexpr float FIXED_DT = 1.0f / 60.0f;
@@ -1414,13 +1426,20 @@ static float schoolChance(float depthFt) {
   return 0.25f;
 }
 
-static bool trySpawnGroup(bool seededInside) {
+static bool trySpawnGroup(bool seededInside, bool preloadDeep=false) {
   bool giantsAllowed=countGiants()<MAX_GIANTS;
   for (uint8_t attempt=0;attempt<6;attempt++) {
     float worldY;
     float sy;
-    if (uniform01()<0.70f) sy=randomRange(g.lure.y-g.cameraTop+18.0f, 278.0f);
-    else sy=randomRange(52.0f, g.lure.y-g.cameraTop+18.0f);
+    if (preloadDeep) {
+      // Spawn far enough below the screen that fish are already swimming long
+      // before the descending hook can reach their lane.
+      sy=randomRange(FISH_PRELOAD_MIN_SCREEN_Y, FISH_PRELOAD_MAX_SCREEN_Y);
+    } else if (uniform01()<0.70f) {
+      sy=randomRange(g.lure.y-g.cameraTop+18.0f, 278.0f);
+    } else {
+      sy=randomRange(52.0f, g.lure.y-g.cameraTop+18.0f);
+    }
     worldY=g.cameraTop+sy;
     if (worldY<0) worldY=0;
     float depth=biomeDepthForWorldY(worldY);
@@ -1459,16 +1478,40 @@ static void seedInitialFish() {
   }
 }
 
+static uint8_t countPreloadedFish() {
+  uint8_t count=0;
+  for (uint8_t i=0;i<MAX_FISH;i++) {
+    const Fish& f=g.fish[i];
+    if (!f.active) continue;
+    if (f.worldY-g.cameraTop > FISH_PRELOAD_TRACK_SCREEN_Y) ++count;
+  }
+  return count;
+}
+
 static void updateSpawnScheduler(float dt) {
   g.spawn.secondsUntilAttempt -= dt;
   if (g.spawn.secondsUntilAttempt>0) return;
+
   float depth=biomeDepthForWorldY(g.lure.y);
-  uint8_t target=targetFishForDepth(depth);
-  if (countActiveFish()>=target) {
+  uint8_t active=countActiveFish();
+  uint8_t desiredTotal=(uint8_t)(targetFishForDepth(depth) + FISH_PRELOAD_TARGET);
+  if (desiredTotal>MAX_FISH) desiredTotal=MAX_FISH;
+
+  // Refill the deep look-ahead band first. Once those fish rise toward the
+  // visible playfield they stop counting as preloaded, so later free slots are
+  // used to stage replacements farther down. This creates a continuous stream
+  // of already-running fish instead of spawning each depth only as it appears.
+  bool needPreload=countPreloadedFish()<FISH_PRELOAD_TARGET;
+
+  // If the preload corridor is underfilled, use any genuinely free fish slot
+  // to restore it even when the normal near-hook population is already healthy.
+  // Otherwise the look-ahead reserve could disappear during a long dense run.
+  if (active>=desiredTotal && !(needPreload && active<MAX_FISH)) {
     g.spawn.secondsUntilAttempt=spawnIntervalForDepth(depth);
     return;
   }
-  bool ok=trySpawnGroup(false);
+
+  bool ok=trySpawnGroup(false, needPreload);
   g.spawn.secondsUntilAttempt= ok ? spawnIntervalForDepth(depth) : randomRange(0.06f,0.10f);
 }
 
@@ -1476,10 +1519,23 @@ static void cullFish() {
   for (uint8_t i=0;i<MAX_FISH;i++) {
     Fish& f=g.fish[i];
     if (!f.active) continue;
+
+    float sy=f.worldY-g.cameraTop;
     float hw=fishHalfW(f);
     bool exited=(f.direction>0 && f.x-hw>SCREEN_W+16) || (f.direction<0 && f.x+hw<-16);
-    float sy=f.worldY-g.cameraTop;
-    bool vertical=sy<-100 || sy>SCREEN_H+100;
+
+    // While a fish is still in the hidden preload corridor, keep it swimming
+    // instead of destroying it when it crosses the far edge. Wrapping it back
+    // to the opposite side lets slow species accumulate real travel time before
+    // their lane scrolls into view. Once the lane approaches the playfield,
+    // normal edge culling resumes.
+    if (exited && sy>FISH_PRELOAD_TRACK_SCREEN_Y) {
+      f.x = (f.direction>0) ? (-hw-6.0f) : (SCREEN_W+hw+6.0f);
+      f.prevX=f.x;
+      exited=false;
+    }
+
+    bool vertical=sy<-100 || sy>FISH_PRELOAD_CULL_SCREEN_Y;
     if (exited || vertical) f.active=false;
   }
 }
@@ -2745,6 +2801,8 @@ static void drawTitleScene(Painter& p,const RectI& region){
   p.rect(22,252,196,30,snap.selectedPlayers==2?sel:dim);
   centered(p,120,222,"1 PLAYER",2,snap.selectedPlayers==1?ST77XX_WHITE:pack565(150,170,175));
   centered(p,120,260,"2 PLAYERS",2,snap.selectedPlayers==2?ST77XX_WHITE:pack565(150,170,175));
+  p.fill(0,MenuFooter::Y,MenuFooter::WIDTH,MenuFooter::HEIGHT,MenuFooter::BACKGROUND);
+  centered(p,120,MenuFooter::Y+4,MenuFooter::TEXT,1,MenuFooter::FOREGROUND);
 }
 
 static void previewFish(Painter& p,const CatchResult& r,int yCenter){
@@ -2822,7 +2880,9 @@ static void drawFinalScene(Painter& p,const RectI& region){
   }else{
     centered(p,120,255,"PLAYER 2 WINS",1,ST77XX_YELLOW);
   }
-  centered(p,120,303,"BUTTON: REMATCH",1,ST77XX_WHITE);
+  centered(p,120,284,"BUTTON: REMATCH",1,ST77XX_WHITE);
+  p.fill(0,MenuFooter::Y,MenuFooter::WIDTH,MenuFooter::HEIGHT,MenuFooter::BACKGROUND);
+  centered(p,120,MenuFooter::Y+4,MenuFooter::TEXT,1,MenuFooter::FOREGROUND);
 }
 
 static void composeRegion(const RectI& region){

@@ -8,6 +8,7 @@
 #include <math.h>
 #include <esp_system.h>
 #include <string.h>
+#include "MenuFooter.h"
 
 // AVR/ESP32 flash-storage helpers are provided by Arduino cores, but the
 // desktop Jakeboy simulator may not define them. Keep the title bitmap in
@@ -3733,6 +3734,7 @@ void renderTitleScreen() {
   display.setTextColor(ST77XX_CYAN, ST77XX_BLACK);
   display.setCursor(36, TITLE_ART_H + 25);
   display.print("PRESS TO START");
+  MenuFooter::draw(display);
 }
 
 void renderStartingScreen(uint32_t nowMs) {
@@ -3786,6 +3788,7 @@ void renderDestroyedScreen() {
   display.print("BOTH UP TO ARM");
   display.setCursor(54, 219);
   display.print("THEN CENTER TO RESTART");
+  MenuFooter::draw(display);
 }
 
 void renderFrame(uint32_t nowMs) {

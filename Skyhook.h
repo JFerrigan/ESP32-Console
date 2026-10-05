@@ -11,6 +11,7 @@
 #include "GameRenderMemory.h"
 #include "Hardware.h"
 #include "MusicPlayer.h"
+#include "MenuFooter.h"
 
 namespace Skyhook {
 
@@ -1523,6 +1524,8 @@ void drawHudAndOverlay(const RenderSnapshot& s) {
   else if(s.phase==RETRY_PROMPT){canvas.fillRect(30,112,180,92,C_BLACK);canvas.drawRect(30,112,180,92,C_AMBER);canvas.setTextColor(C_AMBER);canvas.setTextSize(2);canvas.setCursor(72,124);canvas.print("PAUSED");canvas.setTextSize(1);canvas.setTextColor(C_CREAM);canvas.setCursor(55,157);canvas.print("LEFT: RETRY");canvas.setCursor(52,175);canvas.print("RIGHT: RESUME");}
   else if(s.phase==RESULTS){canvas.fillRect(25,78,190,160,C_BLACK);canvas.drawRect(25,78,190,160,C_GREEN);canvas.setTextColor(C_GREEN);canvas.setTextSize(2);canvas.setCursor(58,90);canvas.print("RECEIVED");canvas.setTextSize(1);canvas.setTextColor(C_CREAM);canvas.setCursor(50,126);canvas.print("CONTRACT  $");canvas.print(s.resultPayout);canvas.setCursor(50,143);canvas.print("SALVAGE   $");canvas.print(s.resultOptional);canvas.setCursor(50,160);canvas.print("RUN TOTAL $");canvas.print(s.runMoney);if(s.practice){canvas.setTextColor(C_AMBER);canvas.setCursor(77,178);canvas.print("PRACTICE");}canvas.setTextColor(C_CREAM);canvas.setCursor(48,205);canvas.print("LEFT: NEXT");canvas.setCursor(48,220);canvas.print("RIGHT: PRACTICE");}
   else if(s.phase==RECOVERY){canvas.fillRect(25,104,190,112,C_BLACK);canvas.drawRect(25,104,190,112,C_RED);canvas.setTextColor(C_RED);canvas.setTextSize(2);canvas.setCursor(48,118);canvas.print(s.recoveryReason==REC_CARGO_LOST?"CARGO LOST":"SIM RESET");canvas.setTextSize(1);canvas.setTextColor(C_CREAM);canvas.setCursor(45,162);canvas.print("SAME SEED PRESERVED");canvas.setCursor(62,188);canvas.print("LEFT: RETRY");}
+  if(s.phase==BRIEFING || s.phase==RETRY_PROMPT || s.phase==RESULTS || s.phase==RECOVERY)
+    MenuFooter::draw(canvas);
 }
 
 void composeBand(int band) {

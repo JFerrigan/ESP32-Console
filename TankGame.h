@@ -7,6 +7,7 @@
 #include "GameRenderMemory.h"
 #include "Hardware.h"
 #include "MusicPlayer.h"
+#include "MenuFooter.h"
 
 // Jakeboy Tank
 // Complete self-contained game implementation for the current launcher API.
@@ -2472,6 +2473,8 @@ static void render() {
   drawDeathAnimation();
   drawGameOverOverlay();
   presentFrame();
+  if (g.mode == Mode::GAME_OVER || g.mode == Mode::VICTORY_WAIT)
+    MenuFooter::draw(display);
 }
 
 // -----------------------------------------------------------------------------

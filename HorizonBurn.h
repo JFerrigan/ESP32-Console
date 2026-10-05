@@ -8,6 +8,7 @@
 #include "GameAPI.h"
 #include "Hardware.h"
 #include "MusicPlayer.h"
+#include "MenuFooter.h"
 
 namespace HorizonBurn {
 
@@ -1512,10 +1513,14 @@ static inline void drawHUD(StripCanvas& c,const RenderSnapshot& s){
 }
 
 static inline void drawFooter(StripCanvas& c){fillRectLocal(c,{0,308,240,12},C_DEEP_VOID);}
+static inline void drawMenuFooter(StripCanvas& c){
+  fillRectLocal(c,{0,MenuFooter::Y,MenuFooter::WIDTH,MenuFooter::HEIGHT},MenuFooter::BACKGROUND);
+  textLocal(c,MenuFooter::TEXT,{0,MenuFooter::Y+4,MenuFooter::WIDTH,8},1,1,MenuFooter::FOREGROUND);
+}
 
 static inline void drawTitle(StripCanvas& c,const RenderSnapshot& s){
   drawSkySun(c);drawMountains(c);drawGround(c,s);textLocal(c,"HORIZON",{0,118,240,30},1,4,C_CYAN);textLocal(c,"BURN",{0,151,240,30},1,4,C_PINK);
-  drawSignatureShip(c,120,246);textLocal(c,"PRESS TO START",{0,287,240,16},1,2,C_HIGHLIGHT);drawFooter(c);
+  drawSignatureShip(c,120,246);textLocal(c,"PRESS TO START",{0,287,240,16},1,2,C_HIGHLIGHT);drawMenuFooter(c);
 }
 
 static inline void drawDifficulty(StripCanvas& c,const RenderSnapshot& s){
@@ -1550,7 +1555,7 @@ static inline void drawDifficulty(StripCanvas& c,const RenderSnapshot& s){
   lineLocal(c,{(int16_t)(playBtn.x+playBtn.w-1),playBtn.y},{(int16_t)(playBtn.x+playBtn.w-1),(int16_t)(playBtn.y+playBtn.h-1)},C_PINK);
   textLocal(c,"PLAY",{142,284,66,14},1,2,C_HIGHLIGHT);
   triangleLocal(c,{224,290},{216,283},{216,297},C_PINK);
-  drawFooter(c);
+  drawMenuFooter(c);
 }
 
 static inline void drawGameplayScene(StripCanvas& c,const RenderSnapshot& s){
@@ -1599,9 +1604,9 @@ static inline void drawResults(StripCanvas& c,const RenderSnapshot& s){
   lineLocal(c,{(int16_t)(playBtn.x+playBtn.w-1),playBtn.y},{(int16_t)(playBtn.x+playBtn.w-1),(int16_t)(playBtn.y+playBtn.h-1)},C_PINK);
   textLocal(c,"PLAY",{142,284,66,14},1,2,C_HIGHLIGHT);
   triangleLocal(c,{224,290},{216,283},{216,297},C_PINK);
-  drawFooter(c);
+  drawMenuFooter(c);
 }
-static inline void drawFault(StripCanvas& c,const RenderSnapshot& s){fillRectLocal(c,{0,0,240,320},C_DEEP_VOID);textLocal(c,"CANNOT START",{0,96,240,22},1,3,C_MISS);const char* r=s.result==ResultReason::PoolOverflow?"NOTE POOL FULL":"CHART ERROR";textLocal(c,r,{0,142,240,14},1,2,C_HIGHLIGHT);drawFooter(c);}
+static inline void drawFault(StripCanvas& c,const RenderSnapshot& s){fillRectLocal(c,{0,0,240,320},C_DEEP_VOID);textLocal(c,"CANNOT START",{0,96,240,22},1,3,C_MISS);const char* r=s.result==ResultReason::PoolOverflow?"NOTE POOL FULL":"CHART ERROR";textLocal(c,r,{0,142,240,14},1,2,C_HIGHLIGHT);drawMenuFooter(c);}
 
 static inline void composeRegion(const RenderSnapshot& s,Rect r,uint16_t* dst){StripCanvas c{dst,r,r.w};drawBackgroundRows(c);switch(s.phase){case Phase::Title:drawTitle(c,s);break;case Phase::Difficulty:drawDifficulty(c,s);break;case Phase::Ready:case Phase::CountIn:case Phase::Playing:case Phase::FailFlyby:case Phase::ClearOutro:drawGameplayScene(c,s);break;case Phase::Results:drawResults(c,s);break;case Phase::Fault:drawFault(c,s);break;}}
 
